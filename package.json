@@ -1,0 +1,43 @@
+{
+  "name": "mygamingslot-booking-engine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A TypeScript time-slot booking engine for gaming cafes and sports venues.",
+  "license": "UNLICENSED",
+  "files": [
+    "dist/src",
+    "src/infrastructure/postgres/migrations"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/unit/*.test.js",
+    "test:stress": "npm run build && node --test dist/tests/stress/*.test.js",
+    "test:all": "npm run build && node --test dist/tests/unit/*.test.js dist/tests/stress/*.test.js dist/tests/integration/*.test.js",
+    "stress:pg": "npm run build && node dist/scripts/stress-postgres.js",
+    "example": "npm run build && node dist/examples/gaming-cafe.js",
+    "db:migrate": "npm run build && node dist/scripts/migrate.js"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.10",
+    "luxon": "^3.7.2",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.6.2",
+    "@types/node": "^24.10.1",
+    "@types/pg": "^8.15.6",
+    "typescript": "^5.9.3"
+  }
+}
