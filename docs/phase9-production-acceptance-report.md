@@ -149,7 +149,7 @@ Implemented and verified in [billing.ts](file:///c:/Users/vishn/Desktop/my%20pro
   - **Express.js** ([examples/integrations/express-app/server.mjs](file:///c:/Users/vishn/Desktop/my%20project/mygamingslot/examples/integrations/express-app/server.mjs)): Installed `express` independently with `@onelinebooking/sdk`; **live-verified** end-to-end against `/v1` API in `phase9-production-acceptance.test.ts`.
   - **Python 3 REST** ([examples/integrations/python-rest/client.py](file:///c:/Users/vishn/Desktop/my%20project/mygamingslot/examples/integrations/python-rest/client.py)): Zero-dep Python REST client executing live `GET /v1/availability`, `POST /v1/holds`, `POST /v1/holds/:id/convert`, and `POST /v1/bookings/:id/cancel` in `phase9-production-acceptance.test.ts`.
   - **Next.js App Router BFF** ([examples/integrations/nextjs-app/app/api/booking/route.ts](file:///c:/Users/vishn/Desktop/my%20project/mygamingslot/examples/integrations/nextjs-app/app/api/booking/route.ts)): Authored reference route handler cleanly typed against `@onelinebooking/sdk/server` (not booted in standalone Next app).
-  - **React Client Widget** ([examples/integrations/react-widget/BookingWidget.tsx](file:///c:/Users/vishn/Desktop/my%20project/mygamingslot/examples/integrations/react-widget/BookingWidget.tsx)): Uses `OneLineBookingPublicClient` (`@onelinebooking/sdk/browser`) reading `slot.amountMinor` / `slot.currency` via BFF proxy (not mounted in standalone React bundler).
+  - **React Client Widget** ([examples/integrations/react-widget/BookingWidget.tsx](file:///c:/Users/vishn/Desktop/my%20project/mygamingslot/examples/integrations/react-widget/BookingWidget.tsx)): Uses `OneLineBookingPublicClient` (`@onelinebooking/sdk/browser`) and formats `slot.amountMinor` with `formatMinorCurrency` via BFF proxy (not mounted in standalone React bundler).
   - **cURL Quickstart** ([examples/integrations/curl-quickstart/quickstart.sh](file:///c:/Users/vishn/Desktop/my%20project/mygamingslot/examples/integrations/curl-quickstart/quickstart.sh)): Direct REST onboarding command template (script file provided, not invoked via bash).
 
 ---
@@ -160,8 +160,8 @@ Implemented and verified in [billing.ts](file:///c:/Users/vishn/Desktop/my%20pro
 1. Multi-outlet café onboarding (`Koramangala`, `Whitefield`) via `/v1/locations`.
 2. Gaming station provisioning (`gaming_pc`, `console_ps5`) + schedules/policies/pricing.
 3. Live availability queries.
-4. Customer online 2-phase reservation (`hold -> convert`).
-5. Online payment confirmation tracking (`paymentConfirmed: true`, `externalPaymentRef`).
+4. Customer online reservation places a hold and leaves payment `awaiting_provider` (`payment.confirmed: false`).
+5. Hold conversion records a caller-supplied provider reference (`reference_recorded`) and still does not mark the payment confirmed. A missing reference returns HTTP 422.
 6. Receptionist walk-in booking path (`/api/pilot/reserve/walk-in`).
 7. Cash payment settlement recording (`cashPaid: true`, `externalPaymentRef: "cash_paid:CASH-001"`).
 8. Dynamic pricing update (`PUT /api/pilot/pricing` -> `15000 INR`) + stale-`slotRef` `409` rejection + updated price lookup.

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  formatMinorCurrency,
   OneLineBookingPublicClient,
   type AvailabilitySlotDto,
   type BookingSummaryDto,
@@ -44,7 +45,7 @@ export function BookingWidget({ proxyBaseUrl, facilityId, dateIso, customerId }:
         {slots.map((slot) => (
           <li key={slot.slotRef}>
             <button type="button" onClick={() => void reserveSlot(slot.slotRef)}>
-              Book {slot.localStart} ({slot.amountMinor} {slot.currency})
+              Book {slot.localStart.slice(11, 16)}–{slot.localEnd.slice(11, 16)} ({slot.amountMinor != null && slot.currency ? formatMinorCurrency(slot.amountMinor, slot.currency) : "Price unavailable"})
             </button>
           </li>
         ))}

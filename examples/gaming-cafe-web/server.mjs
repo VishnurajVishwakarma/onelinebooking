@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { OneLineBookingClient, OneLineBookingApiError, verifyWebhookSignature } from "../../packages/sdk/dist/esm/server.js";
+import { formatMinorCurrency } from "../../packages/sdk/dist/esm/browser.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -62,7 +63,16 @@ export function createGamingCafeApp(config) {
         const fromDate = url.searchParams.get("fromDate") ?? "";
         const toDate = url.searchParams.get("toDate") ?? fromDate;
         const avail = await sdk.availability.get({ facilityId, fromDate, toDate });
-        json(res, 200, avail);
+        json(res, 200, {
+          ...avail,
+          slots: avail.slots.map((slot) => ({
+            ...slot,
+            displayAmount:
+              slot.amountMinor != null && slot.currency
+                ? formatMinorCurrency(slot.amountMinor, slot.currency)
+                : null,
+          })),
+        });
         return;
       }
 

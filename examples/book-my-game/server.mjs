@@ -153,31 +153,31 @@ export function createBookMyGameApp(config) {
         return;
       }
 
-      // Online customer reservation (2-phase Hold -> Convert)
+      // Online customer reservation. This only places a hold.
+      // Booking confirmation and payment status stay separate: this app never
+      // marks a charge paid and never invents a gateway reference.
       if (method === "POST" && url.pathname === "/api/pilot/reserve/online") {
         const { data } = await readBody(req);
-        const hold = await sdk.holds.create(
-          {
-            facilityId: data.facilityId,
-            slotRefs: data.slotRefs,
-            externalCustomerId: data.customerId,
-          },
-          { idempotencyKey: data.idempotencyKey },
-        );
-        const booking = await sdk.holds.convert(
-          hold.id,
-          {
-            expectedAmountMinor: data.expectedAmountMinor,
-            expectedCurrency: data.expectedCurrency,
-          },
-          { idempotencyKey: data.idempotencyKey ? `${data.idempotencyKey}-conv` : undefined },
-        );
+        const holdInput = {
+          facilityId: data.facilityId,
+          slotRefs: data.slotRefs,
+          externalCustomerId: data.customerId,
+        };
+        if (data.expectedAmountMinor !== undefined || data.expectedCurrency !== undefined) {
+          holdInput.expectedAmountMinor = data.expectedAmountMinor;
+          holdInput.expectedCurrency = data.expectedCurrency;
+        }
+        const hold = await sdk.holds.create(holdInput, { idempotencyKey: data.idempotencyKey });
         send(res, 201, {
           mode: "online",
-          paymentMethod: data.paymentMethod || "upi_online",
-          paymentConfirmed: true,
-          holdId: hold.id,
-          booking,
+          booking: null,
+          hold,
+          payment: {
+            status: "awaiting_provider",
+            confirmed: false,
+            simulated: false,
+            method: data.paymentMethod || "upi_online",
+          },
         });
         return;
       }
@@ -201,17 +201,36 @@ export function createBookMyGameApp(config) {
       const confirmHoldMatch = /^\/api\/pilot\/holds\/([^/]+)\/confirm$/.exec(url.pathname);
       if (method === "POST" && confirmHoldMatch) {
         const { data } = await readBody(req);
-        const paymentRef = data.paymentRef || `pg_${randomUUID().slice(0, 8)}`;
-        const booking = await sdk.holds.convert(
-          confirmHoldMatch[1],
-          {
-            expectedAmountMinor: data.expectedAmountMinor,
-            expectedCurrency: data.expectedCurrency,
-            externalPaymentRef: paymentRef,
-          },
-          { idempotencyKey: data.idempotencyKey },
-        );
-        send(res, 200, { paymentConfirmed: true, paymentRef, booking });
+        const paymentRef = typeof data.paymentRef === "string" ? data.paymentRef.trim() : "";
+        const simulated = data.paymentSimulation === true;
+        if (simulated && paymentRef) {
+          send(res, 422, {
+            error: "Send either a provider paymentRef or paymentSimulation, not both.",
+            payment: { status: "unverified", confirmed: false, simulated: false },
+          });
+          return;
+        }
+        if (!paymentRef && !simulated) {
+          send(res, 422, {
+            error: "Verify the charge with the payment provider and pass its paymentRef. This app does not invent gateway ids or mark payment confirmed. Set paymentSimulation true only for an explicitly labelled demo conversion.",
+            payment: { status: "unverified", confirmed: false, simulated: false },
+          });
+          return;
+        }
+        const convertInput = {
+          expectedAmountMinor: data.expectedAmountMinor,
+          expectedCurrency: data.expectedCurrency,
+        };
+        if (paymentRef) convertInput.externalPaymentRef = paymentRef;
+        const booking = await sdk.holds.convert(confirmHoldMatch[1], convertInput, {
+          idempotencyKey: data.idempotencyKey,
+        });
+        send(res, 200, {
+          booking,
+          payment: simulated
+            ? { status: "simulated", confirmed: false, simulated: true, paymentRef: null }
+            : { status: "reference_recorded", confirmed: false, simulated: false, paymentRef },
+        });
         return;
       }
 

@@ -546,7 +546,7 @@ describe("Phase 9 Production Acceptance: Security Hardening, Sandbox Billing, DX
       const openSlots = avail.slots.filter((s) => s.available);
       assert.ok(openSlots.length >= 8);
 
-      // 4-5: Online customer booking + online payment confirmation
+      // 4-5: Online hold stays unpaid until the caller supplies a provider reference.
       const onlineRes = await fetch(`${pilotUrl}/api/pilot/reserve/online`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -560,8 +560,44 @@ describe("Phase 9 Production Acceptance: Security Hardening, Sandbox Billing, DX
         }),
       });
       assert.equal(onlineRes.status, 201);
-      const onlineJson = (await onlineRes.json()) as { paymentConfirmed: boolean; booking: { id: string } };
-      assert.equal(onlineJson.paymentConfirmed, true);
+      const onlineJson = (await onlineRes.json()) as {
+        booking: null;
+        hold: { id: string };
+        payment: { confirmed: boolean; status: string; simulated: boolean };
+      };
+      assert.equal(onlineJson.booking, null);
+      assert.equal(onlineJson.payment.confirmed, false);
+      assert.equal(onlineJson.payment.simulated, false);
+      assert.equal(onlineJson.payment.status, "awaiting_provider");
+
+      const unverifiedRes = await fetch(`${pilotUrl}/api/pilot/holds/${onlineJson.hold.id}/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedAmountMinor: 12000, expectedCurrency: "INR" }),
+      });
+      assert.equal(unverifiedRes.status, 422);
+      const unverifiedJson = (await unverifiedRes.json()) as { payment: { confirmed: boolean }; error: string };
+      assert.equal(unverifiedJson.payment.confirmed, false);
+      assert.equal(unverifiedJson.error.includes("pg_"), false);
+
+      const confirmRes = await fetch(`${pilotUrl}/api/pilot/holds/${onlineJson.hold.id}/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expectedAmountMinor: 12000,
+          expectedCurrency: "INR",
+          paymentRef: "provider_charge_test_001",
+        }),
+      });
+      assert.equal(confirmRes.status, 200);
+      const confirmedJson = (await confirmRes.json()) as {
+        booking: { id: string; externalPaymentRef: string | null };
+        payment: { confirmed: boolean; status: string; paymentRef: string };
+      };
+      assert.equal(confirmedJson.payment.confirmed, false);
+      assert.equal(confirmedJson.payment.status, "reference_recorded");
+      assert.equal(confirmedJson.payment.paymentRef, "provider_charge_test_001");
+      assert.equal(confirmedJson.booking.externalPaymentRef, "provider_charge_test_001");
 
       // 6-7: Receptionist walk-in booking with CASH payment
       const walkInRes = await fetch(`${pilotUrl}/api/pilot/reserve/walk-in`, {
@@ -665,7 +701,7 @@ describe("Phase 9 Production Acceptance: Security Hardening, Sandbox Billing, DX
       assert.equal(blkTry.status, 409);
 
       // 11: Cancellation
-      const canRes = await fetch(`${pilotUrl}/api/pilot/bookings/${onlineJson.booking.id}/cancel`, {
+      const canRes = await fetch(`${pilotUrl}/api/pilot/bookings/${confirmedJson.booking.id}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: "Customer rescheduled" }),
@@ -676,7 +712,7 @@ describe("Phase 9 Production Acceptance: Security Hardening, Sandbox Billing, DX
       const histRes = await fetch(`${pilotUrl}/api/pilot/customers/gamer-online-1/bookings`);
       assert.equal(histRes.status, 200);
       const histJson = (await histRes.json()) as { items: Array<{ id: string; status: string }> };
-      assert.equal(histJson.items[0]?.id, onlineJson.booking.id);
+      assert.equal(histJson.items[0]?.id, confirmedJson.booking.id);
       assert.equal(histJson.items[0]?.status, "cancelled");
 
       // 13: Re-fetch availability after blackout config change -> concurrent customer bookings race for same slot -> strictly 1 winner

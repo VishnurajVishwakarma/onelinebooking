@@ -85,7 +85,9 @@
         const btn = document.createElement("button");
         btn.className = "slot" + (s.available ? " available" : "");
         btn.disabled = !s.available;
-        btn.textContent = `${s.localStart} - ${s.localEnd} (${s.amountMinor ?? 0} ${s.currency ?? ""})`;
+        const start = String(s.localStart).slice(11, 16);
+        const end = String(s.localEnd).slice(11, 16);
+        btn.textContent = `${start}–${end} · ${s.displayAmount || "Price unavailable"}`;
         btn.onclick = () => placeHold(s);
         slotsEl.appendChild(btn);
       }
@@ -113,7 +115,9 @@
           body: JSON.stringify({ expectedAmountMinor: slot.amountMinor, expectedCurrency: slot.currency }),
         });
         const cData = await cRes.json();
-        resultEl.textContent = cRes.ok ? `Confirmed Booking ID: ${cData.booking.id}` : `Failed: ${cData.error}`;
+        resultEl.textContent = cRes.ok
+          ? `Station reserved. Booking ${cData.booking.id}. Quoted ${slot.displayAmount || "price unavailable"}. Payment was not collected.`
+          : `Failed: ${cData.error}`;
         await loadSlots();
         await loadBookings();
       };

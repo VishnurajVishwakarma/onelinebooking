@@ -385,7 +385,7 @@ describe("Phase 8 Security Regression, KMS Rotation, Auth Email, Billing & Book 
         const avail = (await availRes.json()) as { slots: Array<{ slotRef: string; startsAt: string; endsAt: string; amountMinor: number; currency: string }> };
         assert.ok(avail.slots.length >= 4);
 
-        // Online reservation (2-phase hold -> convert)
+        // Online reservation places a hold and leaves payment unverified.
         const onlineRes = await fetch(`${pilotUrl}/api/pilot/reserve/online`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -398,6 +398,13 @@ describe("Phase 8 Security Regression, KMS Rotation, Auth Email, Billing & Book 
           }),
         });
         assert.equal(onlineRes.status, 201);
+        const onlineJson = (await onlineRes.json()) as {
+          booking: null;
+          payment: { confirmed: boolean; status: string };
+        };
+        assert.equal(onlineJson.booking, null);
+        assert.equal(onlineJson.payment.confirmed, false);
+        assert.equal(onlineJson.payment.status, "awaiting_provider");
 
         // Receptionist walk-in pay-at-counter reservation
         const walkInRes = await fetch(`${pilotUrl}/api/pilot/reserve/walk-in`, {

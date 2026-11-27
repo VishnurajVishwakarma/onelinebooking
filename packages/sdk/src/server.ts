@@ -97,7 +97,7 @@ export class OneLineBookingClient {
   };
 
   readonly holds: {
-    create: (input: { facilityId: string; slotRefs: string[]; externalCustomerId?: string; expiresInMinutes?: number }, opts?: SdkRequestOptions) => Promise<HoldResultDto>;
+    create: (input: { facilityId: string; slotRefs: string[]; externalCustomerId?: string; expiresInMinutes?: number; expectedAmountMinor?: number; expectedCurrency?: string }, opts?: SdkRequestOptions) => Promise<HoldResultDto>;
     get: (holdId: string, opts?: SdkRequestOptions) => Promise<HoldResultDto>;
     release: (holdId: string, opts?: SdkRequestOptions) => Promise<HoldResultDto>;
     convert: (holdId: string, input?: { expectedAmountMinor?: number; expectedCurrency?: string; externalPaymentRef?: string }, opts?: SdkRequestOptions) => Promise<BookingSummaryDto>;

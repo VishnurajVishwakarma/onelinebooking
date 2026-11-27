@@ -9,6 +9,7 @@ import {
 } from "./types.js";
 
 export * from "./types.js";
+export { formatMinorCurrency, minorUnitExponent } from "./money.js";
 
 export interface OneLineBookingPublicClientOptions {
   /** Base URL of your own application's BFF/proxy endpoints (never send secret olb_live_ keys from browsers). */
