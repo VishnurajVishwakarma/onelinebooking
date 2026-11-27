@@ -71,14 +71,14 @@ async function main(): Promise<void> {
       ),
     );
     peakBackendsDuringBurst = await countPgConnections(directUrl, appTag);
-    assert.ok(peakBackendsDuringBurst <= 65, `Expected <= 65 PgBouncer server backends, saw ${peakBackendsDuringBurst}`);
+    assert.ok(peakBackendsDuringBurst <= 35, `Expected <= 35 PgBouncer server backends, saw ${peakBackendsDuringBurst}`);
   } finally {
     await Promise.all(burstPools.map((p) => p.end()));
   }
 
-  // 3. Automatic idle server cleanup via SERVER_IDLE_TIMEOUT (15s in compose.yaml) WITHOUT manual PgBouncer restart
+  // 3. Automatic idle server cleanup via SERVER_IDLE_TIMEOUT (5s in compose.yaml) WITHOUT manual PgBouncer restart
   let backendsAfterIdleCleanup = peakBackendsDuringBurst;
-  const deadline = Date.now() + 25_000;
+  const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     backendsAfterIdleCleanup = await countPgConnections(directUrl, appTag);
     if (backendsAfterIdleCleanup === 0) break;

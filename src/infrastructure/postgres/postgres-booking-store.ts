@@ -132,7 +132,7 @@ function translatePgError(error: unknown): never {
       throw new BookingError("NOT_FOUND", "Referenced tenant or facility was not found", { cause: error });
     }
   }
-  if (error instanceof Error && /Connection terminated|timeout expired/i.test(error.message)) {
+  if (error instanceof Error && /Connection terminated|timeout expired|timeout exceeded/i.test(error.message)) {
     throw new BookingError("TEMPORARY_UNAVAILABLE", "Database connection unavailable; safe to retry with same key", {
       retryable: true,
       cause: error,
@@ -2694,7 +2694,7 @@ export function createBookingPool(
     connectionString,
     max: 50,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    connectionTimeoutMillis: 10_000,
     ...config,
   });
 }
