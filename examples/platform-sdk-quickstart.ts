@@ -41,13 +41,13 @@ async function main(): Promise<void> {
   const tenant = await platform.createScopedTenant({
     organizationId: organization.id,
     projectId: project.project.id,
-    environmentId: project.liveEnvironment.id,
+    environmentId: project.testEnvironment.id,
     name: "Flagship Venue",
   });
   const credential = await platform.createApiKey({
     organizationId: organization.id,
     projectId: project.project.id,
-    environmentId: project.liveEnvironment.id,
+    environmentId: project.testEnvironment.id,
     tenantId: tenant.id,
     name: "Backend Server Key",
     scopes: ALL_PLATFORM_SCOPES,

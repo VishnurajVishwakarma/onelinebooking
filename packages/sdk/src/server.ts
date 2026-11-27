@@ -100,7 +100,7 @@ export class OneLineBookingClient {
     create: (input: { facilityId: string; slotRefs: string[]; externalCustomerId?: string; expiresInMinutes?: number }, opts?: SdkRequestOptions) => Promise<HoldResultDto>;
     get: (holdId: string, opts?: SdkRequestOptions) => Promise<HoldResultDto>;
     release: (holdId: string, opts?: SdkRequestOptions) => Promise<HoldResultDto>;
-    convert: (holdId: string, input?: { expectedAmountMinor?: number; expectedCurrency?: string }, opts?: SdkRequestOptions) => Promise<BookingSummaryDto>;
+    convert: (holdId: string, input?: { expectedAmountMinor?: number; expectedCurrency?: string; externalPaymentRef?: string }, opts?: SdkRequestOptions) => Promise<BookingSummaryDto>;
   };
 
   readonly bookings: {
@@ -111,9 +111,9 @@ export class OneLineBookingClient {
   };
 
   constructor(options: OneLineBookingClientOptions) {
-    if (typeof (globalThis as { window?: unknown }).window !== "undefined" && options.apiKey.startsWith("olb_live_")) {
+    if (typeof (globalThis as { window?: unknown }).window !== "undefined" && /^olb_(test|live)_/i.test(options.apiKey)) {
       throw new SdkSecurityBoundaryError(
-        "Server-only OneLineBookingClient cannot be instantiated in a browser with an olb_live_ key. Use OneLineBookingPublicClient.",
+        "Server-only OneLineBookingClient cannot be instantiated in a browser with secret olb_* keys. Use OneLineBookingPublicClient.",
       );
     }
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
@@ -122,7 +122,7 @@ export class OneLineBookingClient {
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.maxRetries = options.maxRetries ?? 2;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 50;
-    this.fetchImpl = options.fetchFn ?? fetch;
+    this.fetchImpl = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
 
     this.tenants = {
       list: async (q) => {
@@ -134,8 +134,8 @@ export class OneLineBookingClient {
       },
       create: async (input, opts) => {
         const r = await this.request<{ tenant: PlatformTenantDto }>("POST", "/v1/tenants", input, {
-          idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`,
           ...opts,
+          idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`,
         });
         return r.tenant;
       },
@@ -152,8 +152,8 @@ export class OneLineBookingClient {
       },
       create: async (input, opts) => {
         const r = await this.request<{ facility: FacilityDto }>("POST", "/v1/facilities", input, {
-          idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`,
           ...opts,
+          idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`,
         });
         return r.facility;
       },
@@ -205,8 +205,8 @@ export class OneLineBookingClient {
     this.holds = {
       create: async (input, opts) => {
         const r = await this.request<{ hold: HoldResultDto }>("POST", "/v1/holds", input, {
-          idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`,
           ...opts,
+          idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`,
         });
         return r.hold;
       },
@@ -224,7 +224,7 @@ export class OneLineBookingClient {
           "DELETE",
           `/v1/holds/${encodeURIComponent(id)}`,
           undefined,
-          { idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`, ...opts },
+          { ...opts, idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}` },
         );
         return r.hold;
       },
@@ -233,7 +233,7 @@ export class OneLineBookingClient {
           "POST",
           `/v1/holds/${encodeURIComponent(id)}/convert`,
           input ?? {},
-          { idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`, ...opts },
+          { ...opts, idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}` },
         );
         return r.booking;
       },
@@ -242,8 +242,8 @@ export class OneLineBookingClient {
     this.bookings = {
       create: async (input, opts) => {
         const r = await this.request<{ booking: BookingSummaryDto }>("POST", "/v1/bookings", input, {
-          idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`,
           ...opts,
+          idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`,
         });
         return r.booking;
       },
@@ -271,7 +271,7 @@ export class OneLineBookingClient {
           "POST",
           `/v1/bookings/${encodeURIComponent(id)}/cancel`,
           input ?? {},
-          { idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}`, ...opts },
+          { ...opts, idempotencyKey: opts?.idempotencyKey ?? `sdk_${randomUUID()}` },
         );
         return r.booking;
       },
@@ -291,7 +291,12 @@ export class OneLineBookingClient {
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < totalAttempts; attempt++) {
+      if (opts?.signal?.aborted) {
+        throw opts.signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+      }
       const controller = new AbortController();
+      const onCallerAbort = () => controller.abort(opts?.signal?.reason);
+      opts?.signal?.addEventListener("abort", onCallerAbort, { once: true });
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
       timeout.unref?.();
 
@@ -311,6 +316,7 @@ export class OneLineBookingClient {
           signal: controller.signal,
         });
         clearTimeout(timeout);
+        opts?.signal?.removeEventListener("abort", onCallerAbort);
 
         const parsed = (await res.json().catch(() => null)) as unknown;
         if (res.ok) return parsed as T;
@@ -323,7 +329,7 @@ export class OneLineBookingClient {
         };
         const apiErr = new OneLineBookingApiError(res.status, env);
         const transient = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
-        if (canRetry && transient && attempt + 1 < totalAttempts) {
+        if (canRetry && transient && attempt + 1 < totalAttempts && !opts?.signal?.aborted) {
           const delayMs = apiErr.retryAfterSeconds
             ? apiErr.retryAfterSeconds * 1000
             : this.retryBaseDelayMs * 2 ** attempt;
@@ -334,6 +340,8 @@ export class OneLineBookingClient {
         throw apiErr;
       } catch (err) {
         clearTimeout(timeout);
+        opts?.signal?.removeEventListener("abort", onCallerAbort);
+        if (opts?.signal?.aborted) throw err;
         if (err instanceof OneLineBookingApiError) throw err;
         lastErr = err;
         if (canRetry && attempt + 1 < totalAttempts) {

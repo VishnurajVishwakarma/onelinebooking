@@ -13,6 +13,7 @@ export async function POST(req: Request) {
 
     // Strict security rule: Interactive API Playground NEVER runs in live environments
     const ctx = await requireAuthorizedWorkspace({
+      req,
       minRole: "developer",
       tenantId: body.tenantId ?? null,
       requireTestEnvironment: true,

@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
 import type { Pool } from "pg";
 import { BookingError } from "../domain/errors.js";
-import { redactSecrets } from "./control-plane.js";
+import { redactSecrets, sha256Hex } from "./control-plane.js";
 import type { OrganizationRole } from "./model.js";
 import { hashPassword, verifyPassword } from "./security/crypto.js";
-import { sha256Hex } from "./control-plane.js";
+import type { EmailTransport } from "./security/mailer.js";
 
 export type ProjectRole = "admin" | "developer" | "viewer";
 
@@ -38,11 +38,26 @@ const PROJECT_ROLE_RANK: Record<ProjectRole, number> = {
   admin: 3,
 };
 
+export interface ConsoleAuthServiceOptions {
+  emailTransport?: EmailTransport | undefined;
+  fromEmail?: string | undefined;
+}
+
 /**
- * Server-side Developer Console authentication, invitation, session switching, and RBAC service.
+ * Server-side Developer Console authentication, email verification, password reset,
+ * invitation delivery, session switching, and RBAC service.
  */
 export class ConsoleAuthService {
-  constructor(private readonly pool: Pool) {}
+  private readonly emailTransport: EmailTransport | undefined;
+  private readonly fromEmail: string;
+
+  constructor(
+    private readonly pool: Pool,
+    options?: ConsoleAuthServiceOptions,
+  ) {
+    this.emailTransport = options?.emailTransport;
+    this.fromEmail = options?.fromEmail ?? "noreply@onelinebooking.local";
+  }
 
   async registerUser(input: {
     email: string;
@@ -283,6 +298,13 @@ export class ConsoleAuthService {
     role: ProjectRole;
   }): Promise<void> {
     await this.requireOrganizationRole(input.actorEmail, input.organizationId, "admin");
+    const projRes = await this.pool.query(
+      `SELECT 1 FROM projects WHERE id = $1 AND organization_id = $2`,
+      [input.projectId, input.organizationId],
+    );
+    if (projRes.rowCount === 0) {
+      throw new BookingError("FORBIDDEN", "Project does not belong to the specified organization");
+    }
     const email = input.targetEmail.trim().toLowerCase();
     const userRes = await this.pool.query<{ id: string }>(
       `SELECT id FROM console_users WHERE email = $1`,
@@ -347,6 +369,14 @@ export class ConsoleAuthService {
       RETURNING id`,
       [input.organizationId, email, input.role, tokenHash, input.invitedByUserId, expiresAt],
     );
+    if (this.emailTransport) {
+      await this.emailTransport.send({
+        from: this.fromEmail,
+        to: email,
+        subject: "OneLineBooking Organization Invitation",
+        text: `You have been invited as ${input.role}. Accept with invite token: ${inviteToken}`,
+      });
+    }
     return {
       invitationId: res.rows[0]!.id,
       inviteToken,
@@ -401,6 +431,144 @@ export class ConsoleAuthService {
       );
       await client.query("COMMIT");
       return { organizationId: inv.organization_id, role: inv.role };
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async requestEmailVerification(emailInput: string): Promise<{ sent: boolean; verificationToken: string }> {
+    const email = emailInput.trim().toLowerCase();
+    const userRes = await this.pool.query<{ id: string; email: string }>(
+      `SELECT id, email FROM console_users WHERE email = $1`,
+      [email],
+    );
+    if (userRes.rowCount === 0) {
+      throw new BookingError("NOT_FOUND", "User account not found");
+    }
+    const user = userRes.rows[0]!;
+    await this.pool.query(
+      `DELETE FROM console_email_verifications WHERE user_id = $1 AND verified_at IS NULL`,
+      [user.id],
+    );
+    const verificationToken = `olbver_${randomBytes(24).toString("hex")}`;
+    const tokenHash = sha256Hex(verificationToken);
+    const expiresAt = new Date(Date.now() + 24 * 3600_000);
+    await this.pool.query(
+      `INSERT INTO console_email_verifications (user_id, email, token_hash, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [user.id, user.email, tokenHash, expiresAt],
+    );
+    if (this.emailTransport) {
+      await this.emailTransport.send({
+        from: this.fromEmail,
+        to: user.email,
+        subject: "Verify your OneLineBooking Developer email",
+        text: `Verify your email with token: ${verificationToken}`,
+      });
+    }
+    return { sent: true, verificationToken };
+  }
+
+  async verifyEmail(verificationToken: string): Promise<{ verified: boolean; email: string }> {
+    const tokenHash = sha256Hex(verificationToken.trim());
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const res = await client.query<{
+        id: string;
+        user_id: string;
+        email: string;
+        verified_at: Date | null;
+        expires_at: Date;
+      }>(
+        `SELECT * FROM console_email_verifications WHERE token_hash = $1 FOR UPDATE`,
+        [tokenHash],
+      );
+      if (res.rowCount === 0) {
+        throw new BookingError("NOT_FOUND", "Verification token not found");
+      }
+      const row = res.rows[0]!;
+      if (row.verified_at !== null) {
+        throw new BookingError("INVALID_STATE_TRANSITION", "Verification token already used");
+      }
+      if (new Date(row.expires_at).getTime() <= Date.now()) {
+        throw new BookingError("INVALID_STATE_TRANSITION", "Verification token expired");
+      }
+      await client.query(`UPDATE console_email_verifications SET verified_at = now() WHERE id = $1`, [row.id]);
+      await client.query(`UPDATE console_users SET email_verified_at = COALESCE(email_verified_at, now()), updated_at = now() WHERE id = $1`, [row.user_id]);
+      await client.query("COMMIT");
+      return { verified: true, email: row.email };
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async requestPasswordReset(emailInput: string): Promise<{ sent: boolean; resetToken?: string }> {
+    const email = emailInput.trim().toLowerCase();
+    const userRes = await this.pool.query<{ id: string; email: string; status: string }>(
+      `SELECT id, email, status FROM console_users WHERE email = $1`,
+      [email],
+    );
+    if (userRes.rowCount === 0 || userRes.rows[0]!.status !== "active") {
+      // Do not enumerate whether an email exists to external callers
+      return { sent: true };
+    }
+    const user = userRes.rows[0]!;
+    await this.pool.query(
+      `DELETE FROM console_password_resets WHERE user_id = $1 AND used_at IS NULL`,
+      [user.id],
+    );
+    const resetToken = `olbrst_${randomBytes(24).toString("hex")}`;
+    const tokenHash = sha256Hex(resetToken);
+    const expiresAt = new Date(Date.now() + 3600_000);
+    await this.pool.query(
+      `INSERT INTO console_password_resets (user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3)`,
+      [user.id, tokenHash, expiresAt],
+    );
+    if (this.emailTransport) {
+      await this.emailTransport.send({
+        from: this.fromEmail,
+        to: user.email,
+        subject: "OneLineBooking Password Reset",
+        text: `Reset your password with token: ${resetToken}`,
+      });
+    }
+    return { sent: true, resetToken };
+  }
+
+  async resetPassword(input: { resetToken: string; newPassword: string }): Promise<{ reset: boolean }> {
+    const newHash = hashPassword(input.newPassword);
+    const tokenHash = sha256Hex(input.resetToken.trim());
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const res = await client.query<{ id: string; user_id: string; used_at: Date | null; expires_at: Date }>(
+        `SELECT * FROM console_password_resets WHERE token_hash = $1 FOR UPDATE`,
+        [tokenHash],
+      );
+      if (res.rowCount === 0) {
+        throw new BookingError("NOT_FOUND", "Password reset token not found");
+      }
+      const row = res.rows[0]!;
+      if (row.used_at !== null) {
+        throw new BookingError("INVALID_STATE_TRANSITION", "Password reset token already used");
+      }
+      if (new Date(row.expires_at).getTime() <= Date.now()) {
+        throw new BookingError("INVALID_STATE_TRANSITION", "Password reset token expired");
+      }
+      await client.query(`UPDATE console_password_resets SET used_at = now() WHERE id = $1`, [row.id]);
+      await client.query(`UPDATE console_users SET password_hash = $2, updated_at = now() WHERE id = $1`, [row.user_id, newHash]);
+      // Invalidate all prior sessions on password reset
+      await client.query(`UPDATE console_sessions SET revoked_at = COALESCE(revoked_at, now()) WHERE user_id = $1`, [row.user_id]);
+      await client.query("COMMIT");
+      return { reset: true };
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;

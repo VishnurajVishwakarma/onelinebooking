@@ -2,7 +2,13 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { IANAZone } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { BookingError } from "../domain/errors.js";
-import { decryptSecret, encryptSecret, maskWebhookSecret, resolveMasterEncryptionKey } from "./security/crypto.js";
+import {
+  decryptSecret,
+  encryptWithKeyring,
+  maskWebhookSecret,
+  resolveMasterKeyring,
+  type KmsKeyring,
+} from "./security/crypto.js";
 import { validateWebhookUrlAndResolve, type SsrfValidationOptions } from "./security/ssrf.js";
 import {
   ALL_PLATFORM_SCOPES,
@@ -248,6 +254,7 @@ export function mapWebhookDeliveryRow(row: Record<string, unknown>): WebhookDeli
 
 export interface PlatformServiceOptions {
   masterKey?: Buffer | undefined;
+  keyring?: KmsKeyring | undefined;
   ssrfOptions?: SsrfValidationOptions | undefined;
 }
 
@@ -256,14 +263,18 @@ export interface PlatformServiceOptions {
  * API credentials, locations, encrypted webhooks, audit logs, and idempotent usage metering.
  */
 export class PlatformService {
-  private readonly masterKey: Buffer;
+  private readonly keyring: KmsKeyring;
   private readonly ssrfOptions: SsrfValidationOptions;
 
   constructor(
     private readonly pool: Pool,
     options?: PlatformServiceOptions,
   ) {
-    this.masterKey = options?.masterKey ?? resolveMasterEncryptionKey();
+    this.keyring =
+      options?.keyring ??
+      (options?.masterKey
+        ? { activeVersion: 1, keys: { 1: options.masterKey }, providerName: "explicit-buffer" }
+        : resolveMasterKeyring());
     this.ssrfOptions = options?.ssrfOptions ?? {};
   }
 
@@ -851,17 +862,30 @@ export class PlatformService {
     eventTypes?: readonly string[] | undefined;
     ssrfOptions?: SsrfValidationOptions | undefined;
   }): Promise<CreatedWebhookEndpoint> {
-    const validated = await validateWebhookUrlAndResolve(input.url, input.ssrfOptions ?? this.ssrfOptions);
+    const envRes = await this.pool.query<{ type: EnvironmentType }>(
+      `SELECT type FROM environments WHERE id = $1 AND project_id = $2 AND organization_id = $3`,
+      [input.environmentId, input.projectId, input.organizationId],
+    );
+    if (envRes.rowCount === 0) {
+      throw new BookingError("NOT_FOUND", "Environment not found");
+    }
+    const envType = envRes.rows[0]!.type;
+    // Live environments strictly prohibit HTTP or local/private SSRF test overrides
+    const rawSsrf = input.ssrfOptions ?? this.ssrfOptions;
+    const effectiveSsrf: SsrfValidationOptions =
+      envType === "live" ? { ...rawSsrf, allowLocalHttpForTesting: false } : rawSsrf;
+
+    const validated = await validateWebhookUrlAndResolve(input.url, effectiveSsrf);
 
     const signingSecret = generateWebhookSecret();
-    const encryptedSecret = encryptSecret(signingSecret, this.masterKey);
+    const { ciphertext: encryptedSecret, keyVersion } = encryptWithKeyring(signingSecret, this.keyring);
     const hint = maskWebhookSecret(signingSecret);
 
     const res = await this.pool.query(
       `INSERT INTO webhook_endpoints (
         organization_id, project_id, environment_id, tenant_id,
         url, description, event_types, signing_secret, signing_secret_encrypted, secret_hint, secret_key_version
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7::text[], NULL, $8, $9, 1)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7::text[], NULL, $8, $9, $10)
       RETURNING *`,
       [
         input.organizationId,
@@ -873,6 +897,7 @@ export class PlatformService {
         input.eventTypes ? [...input.eventTypes] : [],
         encryptedSecret,
         hint,
+        keyVersion,
       ],
     );
     const endpoint = mapWebhookEndpointRow(res.rows[0] as Record<string, unknown>);
@@ -886,7 +911,7 @@ export class PlatformService {
       action: "webhook_endpoint.created",
       targetType: "webhook_endpoint",
       targetId: endpoint.id,
-      details: { url: endpoint.url, eventTypes: endpoint.eventTypes, encrypted: true, secretHint: hint },
+      details: { url: endpoint.url, eventTypes: endpoint.eventTypes, encrypted: true, keyVersion, secretHint: hint },
     });
 
     return { endpoint, signingSecret };
@@ -916,10 +941,12 @@ export class PlatformService {
       const existing = existingRes.rows[0]!;
       const prevEncrypted =
         (existing.signing_secret_encrypted as string | null) ??
-        (existing.signing_secret ? encryptSecret(String(existing.signing_secret), this.masterKey) : null);
+        (existing.signing_secret
+          ? encryptWithKeyring(String(existing.signing_secret), this.keyring).ciphertext
+          : null);
 
       const newSecret = generateWebhookSecret();
-      const newEncrypted = encryptSecret(newSecret, this.masterKey);
+      const { ciphertext: newEncrypted, keyVersion } = encryptWithKeyring(newSecret, this.keyring);
       const newHint = maskWebhookSecret(newSecret);
       const prevExpiresAt =
         graceMinutes > 0 && prevEncrypted
@@ -932,7 +959,7 @@ export class PlatformService {
              signing_secret_encrypted = $4,
              previous_signing_secret_encrypted = $5,
              previous_secret_expires_at = $6,
-             secret_key_version = secret_key_version + 1,
+             secret_key_version = $8,
              secret_hint = $7,
              updated_at = now()
          WHERE id = $1 AND environment_id = $2 AND tenant_id = $3
@@ -945,6 +972,7 @@ export class PlatformService {
           prevExpiresAt ? prevEncrypted : null,
           prevExpiresAt,
           newHint,
+          keyVersion,
         ],
       );
       const endpoint = mapWebhookEndpointRow(updatedRes.rows[0]!);
@@ -958,7 +986,7 @@ export class PlatformService {
         action: "webhook_endpoint.secret_rotated",
         targetType: "webhook_endpoint",
         targetId: endpoint.id,
-        details: { graceMinutes, secretHint: newHint },
+        details: { graceMinutes, keyVersion, secretHint: newHint },
       });
       await client.query("COMMIT");
       return {
@@ -966,6 +994,64 @@ export class PlatformService {
         signingSecret: newSecret,
         previousSecretValidUntil: prevExpiresAt ? prevExpiresAt.toISOString() : null,
       };
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Re-encrypts stored webhook secrets under a newer KMS keyring version (`secret_key_version`)
+   * without changing the plaintext HMAC secrets shared with customer consumers.
+   */
+  async reEncryptWebhookSecrets(input: {
+    targetKeyring?: KmsKeyring | undefined;
+    organizationId?: string | undefined;
+  }): Promise<{ rotatedCount: number; activeKeyVersion: number }> {
+    const ring = input.targetKeyring ?? this.keyring;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const res = await client.query<Record<string, unknown>>(
+        `SELECT id, organization_id, signing_secret, signing_secret_encrypted,
+                previous_signing_secret_encrypted, secret_key_version
+         FROM webhook_endpoints
+         WHERE ($1::uuid IS NULL OR organization_id = $1::uuid)
+           AND secret_key_version < $2
+         FOR UPDATE`,
+        [input.organizationId ?? null, ring.activeVersion],
+      );
+
+      let rotatedCount = 0;
+      for (const row of res.rows) {
+        const plainPrimary = row.signing_secret_encrypted
+          ? decryptSecret(String(row.signing_secret_encrypted), ring)
+          : row.signing_secret
+            ? String(row.signing_secret)
+            : null;
+        if (!plainPrimary) continue;
+        const nextPrimary = encryptWithKeyring(plainPrimary, ring);
+        let nextPrev: string | null = null;
+        if (row.previous_signing_secret_encrypted) {
+          const plainPrev = decryptSecret(String(row.previous_signing_secret_encrypted), ring);
+          nextPrev = encryptWithKeyring(plainPrev, ring).ciphertext;
+        }
+        await client.query(
+          `UPDATE webhook_endpoints
+           SET signing_secret = NULL,
+               signing_secret_encrypted = $2,
+               previous_signing_secret_encrypted = COALESCE($3, previous_signing_secret_encrypted),
+               secret_key_version = $4,
+               updated_at = now()
+           WHERE id = $1`,
+          [row.id, nextPrimary.ciphertext, nextPrev, ring.activeVersion],
+        );
+        rotatedCount += 1;
+      }
+      await client.query("COMMIT");
+      return { rotatedCount, activeKeyVersion: ring.activeVersion };
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;
@@ -982,7 +1068,7 @@ export class PlatformService {
     previous_secret_expires_at?: Date | string | null;
   }): { primary: string; previous?: string } {
     const primary = row.signing_secret_encrypted
-      ? decryptSecret(row.signing_secret_encrypted, this.masterKey)
+      ? decryptSecret(row.signing_secret_encrypted, this.keyring)
       : row.signing_secret
         ? String(row.signing_secret)
         : (() => {
@@ -992,7 +1078,7 @@ export class PlatformService {
     let previous: string | undefined;
     if (row.previous_signing_secret_encrypted && row.previous_secret_expires_at) {
       if (new Date(row.previous_secret_expires_at).getTime() > Date.now()) {
-        previous = decryptSecret(row.previous_signing_secret_encrypted, this.masterKey);
+        previous = decryptSecret(row.previous_signing_secret_encrypted, this.keyring);
       }
     }
     return previous ? { primary, previous } : { primary };

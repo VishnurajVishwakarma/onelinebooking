@@ -3,7 +3,7 @@ import { jsonErrorResponse, requireConsoleSession } from "@/lib/engine";
 
 export async function POST(req: Request) {
   try {
-    const { backend, session } = await requireConsoleSession();
+    const { backend, session } = await requireConsoleSession(req);
     const body = (await req.json()) as {
       action: "create_project" | "create_tenant";
       organizationId?: string;

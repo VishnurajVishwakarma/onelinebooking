@@ -2,11 +2,12 @@ import { BookingError } from "../../../../src/domain/errors.js";
 import { requireConsoleSession, type PlatformScope, type ProjectRole } from "./engine";
 
 export async function requireAuthorizedWorkspace(options: {
+  req?: Request;
   minRole: ProjectRole;
   tenantId?: string | null;
   requireTestEnvironment?: boolean;
 }) {
-  const { backend, session } = await requireConsoleSession();
+  const { backend, session } = await requireConsoleSession(options.req);
   const orgs = await backend.platform.listOrganizationsForUser(session.user.email);
   const org = orgs.find((o) => o.id === session.activeOrganizationId) ?? orgs[0];
   if (!org) {

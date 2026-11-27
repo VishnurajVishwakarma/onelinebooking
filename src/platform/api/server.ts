@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { TimeSlotEngine } from "../../application/time-slot-engine.js";
@@ -28,6 +28,9 @@ export interface PlatformApiServerOptions {
   requestTimeoutMs?: number | undefined;
   maxBodyBytes?: number | undefined;
   maxResponseBytes?: number | undefined;
+  corsAllowedOrigins?: string[] | undefined;
+  /** Optional operational token required for `/v1/metrics` and detailed `/v1/ready` telemetry. */
+  opsAuthToken?: string | undefined;
   meterUsage?: boolean | undefined;
   logRequestsToDb?: boolean | undefined;
   logger?: ((level: "info" | "warn" | "error", msg: string, meta?: Record<string, unknown>) => void) | undefined;
@@ -106,6 +109,19 @@ function httpStatusForError(err: BookingError): { status: number; code: string; 
     code,
     ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
   };
+}
+
+function canonicalJsonStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => canonicalJsonStringify(v)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJsonStringify(v)}`).join(",")}}`;
 }
 
 function sendJson(
@@ -197,6 +213,19 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
   const maxResponseBytes = options.maxResponseBytes ?? 1024 * 1024;
   const meterUsage = options.meterUsage ?? true;
   const logRequestsToDb = options.logRequestsToDb ?? true;
+  const corsAllowlist = new Set((options.corsAllowedOrigins ?? []).map((o) => o.trim()).filter(Boolean));
+  const opsToken = options.opsAuthToken?.trim() || process.env.OLB_OPS_TOKEN?.trim() || undefined;
+
+  const isOpsAuthorized = (req: IncomingMessage): boolean => {
+    if (!opsToken) return true;
+    const xOps = getHeaderString(req, "x-ops-token");
+    const auth = getHeaderString(req, "authorization");
+    const candidate = xOps ?? (auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : undefined);
+    if (!candidate) return false;
+    const a = Buffer.from(opsToken, "utf8");
+    const b = Buffer.from(candidate, "utf8");
+    return a.length === b.length && timingSafeEqual(a, b);
+  };
 
   const log = (level: "info" | "warn" | "error", msg: string, meta?: Record<string, unknown>): void => {
     if (!options.logger) return;
@@ -343,6 +372,35 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
     res.setHeader("X-Trace-Id", trace.traceId);
     res.setHeader("traceparent", trace.traceparent);
     res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Cache-Control", "no-store");
+
+    const originHeader = getHeaderString(req, "origin");
+    if (originHeader) {
+      if (corsAllowlist.has(originHeader)) {
+        res.setHeader("Access-Control-Allow-Origin", originHeader);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-Tenant-Id, X-Correlation-Id");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+      } else if ((req.method ?? "").toUpperCase() === "OPTIONS") {
+        sendJson(res, 403, {
+          error: {
+            code: "FORBIDDEN",
+            category: "authorization",
+            message: "Origin is not permitted by CORS policy",
+            retryable: false,
+            correlationId,
+          },
+        });
+        return;
+      }
+    }
+    if ((req.method ?? "").toUpperCase() === "OPTIONS") {
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
 
     const cancelController = new AbortController();
     let timedOut = false;
@@ -394,9 +452,13 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
         const url = new URL(req.url ?? "/", "http://localhost");
         const pathname = url.pathname;
 
-        // Public endpoints (no auth needed)
+        // Public health probe (minimal unauthenticated signal; detailed telemetry gated by OLB_OPS_TOKEN when set)
         if (method === "GET" && pathname === "/v1/health") {
           await options.pool.query("SELECT 1");
+          if (opsToken && !isOpsAuthorized(req)) {
+            emitBoundedJson(res, 200, { status: "ok" }, correlationId);
+            return;
+          }
           emitBoundedJson(
             res,
             200,
@@ -415,10 +477,31 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
         }
         if (method === "GET" && pathname === "/v1/ready") {
           const readiness = await checkPlatformReadiness(options.pool);
+          if (opsToken && !isOpsAuthorized(req)) {
+            emitBoundedJson(res, readiness.ready ? 200 : 503, { ready: readiness.ready }, correlationId);
+            return;
+          }
           emitBoundedJson(res, readiness.ready ? 200 : 503, readiness, correlationId);
           return;
         }
         if (method === "GET" && pathname === "/v1/metrics") {
+          if (!isOpsAuthorized(req)) {
+            sendJson(
+              res,
+              401,
+              {
+                error: {
+                  code: "UNAUTHORIZED",
+                  category: "authorization",
+                  message: "Operational metrics endpoint requires valid ops token",
+                  retryable: false,
+                  correlationId,
+                },
+              },
+              { "WWW-Authenticate": "Bearer" },
+            );
+            return;
+          }
           const prom = metrics.toPrometheusText(options.pool);
           res.statusCode = 200;
           res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
@@ -517,29 +600,42 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             ? (body as Record<string, unknown>)
             : undefined;
 
+        const reply = (status: number, payload: unknown, headers?: Record<string, string>): void => {
+          responseBytesForLog = emitBoundedJson(res, status, payload, correlationId, headers);
+        };
+
         const recordApiUsage = async (
           tenantIdForMetric: string | null,
-          extraMetric?: "hold_created" | "booking_confirmed" | "booking_cancelled",
+          extra?: {
+            metric: "hold_created" | "booking_confirmed" | "booking_cancelled";
+            mutationIdempotencyKey?: string;
+          },
         ): Promise<void> => {
           if (!meterUsage) return;
           try {
+            const scopeKey = tenantIdForMetric ?? "__env__";
             await options.platform.recordUsage({
               organizationId: principal.organizationId,
               projectId: principal.projectId,
               environmentId: principal.environmentId,
               tenantId: tenantIdForMetric,
+              scopeKey,
               metric: "api_request",
               idempotencyKey: `req:${correlationId}:${method}:${pathname}`,
               metadata: { method, pathname, apiKeyId: principal.apiKeyId },
             });
-            if (extraMetric) {
+            if (extra) {
+              const stableKey = extra.mutationIdempotencyKey
+                ? `idem:${extra.mutationIdempotencyKey}:${extra.metric}`
+                : `evt:${correlationId}:${extra.metric}`;
               await options.platform.recordUsage({
                 organizationId: principal.organizationId,
                 projectId: principal.projectId,
                 environmentId: principal.environmentId,
                 tenantId: tenantIdForMetric,
-                metric: extraMetric,
-                idempotencyKey: `evt:${correlationId}:${extraMetric}`,
+                scopeKey,
+                metric: extra.metric,
+                idempotencyKey: stableKey,
                 metadata: { method, pathname },
               });
             }
@@ -571,7 +667,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
               ? encodeCursor({ createdAt: sliced[sliced.length - 1]!.createdAt.toISOString() })
               : null;
           await recordApiUsage(principal.tenantId);
-          sendJson(res, 200, { items: sliced, nextCursor });
+          reply(200, { items: sliced, nextCursor });
           return;
         }
 
@@ -588,7 +684,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             throw new BookingError("INVALID_INPUT", parsed.error.issues.map((i) => i.message).join("; "));
           }
           const idemKey = resolveIdempotencyKey(req, bodyObj);
-          const reqHash = sha256Hex(JSON.stringify(parsed.data));
+          const reqHash = sha256Hex(canonicalJsonStringify(parsed.data));
           if (idemKey) {
             const cached = await tryReplayApiIdempotency({
               environmentId: principal.environmentId,
@@ -599,7 +695,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
               requestHash: reqHash,
             });
             if (cached) {
-              sendJson(res, cached.status, cached.body, { "X-Idempotent-Replay": "true" });
+              reply(cached.status, cached.body, { "X-Idempotent-Replay": "true" });
               return;
             }
           }
@@ -625,7 +721,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             });
           }
           await recordApiUsage(tenant.id);
-          sendJson(res, 201, payload);
+          reply(201, payload);
           return;
         }
 
@@ -645,7 +741,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             to,
           });
           await recordApiUsage(principal.tenantId ?? null);
-          sendJson(res, 200, { environmentId: principal.environmentId, metrics: summary });
+          reply(200, { environmentId: principal.environmentId, metrics: summary });
           return;
         }
 
@@ -674,7 +770,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             ...parsed.data,
           });
           await recordApiUsage(tenantId);
-          sendJson(res, 201, { location });
+          reply(201, { location });
           return;
         }
 
@@ -693,7 +789,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             resourceKind: parsed.data.resourceKind,
           });
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { attached: true, facilityId, locationId: parsed.data.locationId });
+          reply(200, { attached: true, facilityId, locationId: parsed.data.locationId });
           return;
         }
 
@@ -709,14 +805,14 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           const nextCursor =
             offset + limit < all.length ? encodeCursor({ offset: offset + limit }) : null;
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { items: sliced, nextCursor });
+          reply(200, { items: sliced, nextCursor });
           return;
         }
 
         if (pathname === "/v1/facilities" && method === "POST") {
           assertScope(principal, "facilities:write");
           const idemKey = resolveIdempotencyKey(req, bodyObj);
-          const reqHash = sha256Hex(JSON.stringify(body ?? {}));
+          const reqHash = sha256Hex(canonicalJsonStringify(body ?? {}));
           if (idemKey) {
             const cached = await tryReplayApiIdempotency({
               environmentId: principal.environmentId,
@@ -727,7 +823,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
               requestHash: reqHash,
             });
             if (cached) {
-              sendJson(res, cached.status, cached.body, { "X-Idempotent-Replay": "true" });
+              reply(cached.status, cached.body, { "X-Idempotent-Replay": "true" });
               return;
             }
           }
@@ -746,7 +842,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             });
           }
           await recordApiUsage(tenantId);
-          sendJson(res, 201, payload);
+          reply(201, payload);
           return;
         }
 
@@ -756,14 +852,14 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           const facility = await client.getFacility(facilityMatch[1]!);
           if (!facility) throw new BookingError("NOT_FOUND", "Facility not found");
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { facility });
+          reply(200, { facility });
           return;
         }
         if (facilityMatch && method === "PATCH") {
           assertScope(principal, "facilities:write");
           const facility = await client.updateFacility(facilityMatch[1]!, body as never);
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { facility });
+          reply(200, { facility });
           return;
         }
 
@@ -773,7 +869,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           const windows = Array.isArray(bodyObj?.windows) ? bodyObj.windows : body;
           const schedule = await client.setSchedule(scheduleMatch[1]!, windows as never);
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { schedule });
+          reply(200, { schedule });
           return;
         }
 
@@ -782,7 +878,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           assertScope(principal, "facilities:write");
           const slotPolicy = await client.setSlotPolicy(policyMatch[1]!, body as never);
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { slotPolicy });
+          reply(200, { slotPolicy });
           return;
         }
 
@@ -791,7 +887,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           assertScope(principal, "facilities:write");
           const pricing = await client.setPricing({ ...(bodyObj ?? {}), facilityId: pricingMatch[1]! });
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { pricing });
+          reply(200, { pricing });
           return;
         }
 
@@ -800,7 +896,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           assertScope(principal, "facilities:write");
           const blackout = await client.createBlackout({ ...(bodyObj ?? {}), facilityId: blackoutMatch[1]! });
           await recordApiUsage(tenantId);
-          sendJson(res, 201, { blackout });
+          reply(201, { blackout });
           return;
         }
 
@@ -812,7 +908,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           const toDate = url.searchParams.get("toDate") ?? "";
           const availability = await client.getAvailability({ facilityId, fromDate, toDate });
           await recordApiUsage(tenantId);
-          sendJson(res, 200, availability);
+          reply(200, availability);
           return;
         }
 
@@ -820,7 +916,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           assertScope(principal, "availability:read");
           const check = await client.checkSelection(body as never);
           await recordApiUsage(tenantId);
-          sendJson(res, 200, check);
+          reply(200, check);
           return;
         }
 
@@ -834,7 +930,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
               "Idempotency-Key header (or body.idempotencyKey) is required for POST /v1/holds",
             );
           }
-          const reqHash = sha256Hex(JSON.stringify(body ?? {}));
+          const reqHash = sha256Hex(canonicalJsonStringify(body ?? {}));
           const cached = await tryReplayApiIdempotency({
             environmentId: principal.environmentId,
             tenantScope: tenantId,
@@ -844,7 +940,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             requestHash: reqHash,
           });
           if (cached) {
-            sendJson(res, cached.status, cached.body, { "X-Idempotent-Replay": "true" });
+            reply(cached.status, cached.body, { "X-Idempotent-Replay": "true" });
             return;
           }
           const hold = await client.createHold(body as never, { idempotencyKey: idemKey });
@@ -859,8 +955,8 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             responseStatus: 201,
             responseBody: payload,
           });
-          await recordApiUsage(tenantId, "hold_created");
-          sendJson(res, 201, payload);
+          await recordApiUsage(tenantId, { metric: "hold_created", mutationIdempotencyKey: idemKey });
+          reply(201, payload);
           return;
         }
 
@@ -870,7 +966,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           const hold = await client.getHold(holdMatch[1]!);
           if (!hold) throw new BookingError("NOT_FOUND", "Hold not found");
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { hold });
+          reply(200, { hold });
           return;
         }
         if (holdMatch && method === "DELETE") {
@@ -881,7 +977,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             idemKey ? { idempotencyKey: idemKey } : undefined,
           );
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { hold });
+          reply(200, { hold });
           return;
         }
 
@@ -895,7 +991,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
               "Idempotency-Key header is required for converting holds",
             );
           }
-          const reqHash = sha256Hex(JSON.stringify({ holdId: holdConvertMatch[1], ...(bodyObj ?? {}) }));
+          const reqHash = sha256Hex(canonicalJsonStringify({ holdId: holdConvertMatch[1], ...(bodyObj ?? {}) }));
           const pathTemplate = "/v1/holds/:holdId/convert";
           const cached = await tryReplayApiIdempotency({
             environmentId: principal.environmentId,
@@ -906,7 +1002,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             requestHash: reqHash,
           });
           if (cached) {
-            sendJson(res, cached.status, cached.body, { "X-Idempotent-Replay": "true" });
+            reply(cached.status, cached.body, { "X-Idempotent-Replay": "true" });
             return;
           }
           const booking = await client.convertHoldToBooking(
@@ -924,8 +1020,8 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             responseStatus: 200,
             responseBody: payload,
           });
-          await recordApiUsage(tenantId, "booking_confirmed");
-          sendJson(res, 200, payload);
+          await recordApiUsage(tenantId, { metric: "booking_confirmed", mutationIdempotencyKey: idemKey });
+          reply(200, payload);
           return;
         }
 
@@ -939,7 +1035,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
               "Idempotency-Key header (or body.idempotencyKey) is required for POST /v1/bookings",
             );
           }
-          const reqHash = sha256Hex(JSON.stringify(body ?? {}));
+          const reqHash = sha256Hex(canonicalJsonStringify(body ?? {}));
           const cached = await tryReplayApiIdempotency({
             environmentId: principal.environmentId,
             tenantScope: tenantId,
@@ -949,7 +1045,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             requestHash: reqHash,
           });
           if (cached) {
-            sendJson(res, cached.status, cached.body, { "X-Idempotent-Replay": "true" });
+            reply(cached.status, cached.body, { "X-Idempotent-Replay": "true" });
             return;
           }
           const booking = await client.createBooking(body as never, { idempotencyKey: idemKey });
@@ -964,8 +1060,8 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             responseStatus: 201,
             responseBody: payload,
           });
-          await recordApiUsage(tenantId, "booking_confirmed");
-          sendJson(res, 201, payload);
+          await recordApiUsage(tenantId, { metric: "booking_confirmed", mutationIdempotencyKey: idemKey });
+          reply(201, payload);
           return;
         }
 
@@ -987,7 +1083,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             ...(cursor !== undefined ? { cursor } : {}),
           });
           await recordApiUsage(tenantId);
-          sendJson(res, 200, page);
+          reply(200, page);
           return;
         }
 
@@ -997,7 +1093,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           const booking = await client.getBooking(bookingMatch[1]!);
           if (!booking) throw new BookingError("NOT_FOUND", "Booking not found");
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { booking });
+          reply(200, { booking });
           return;
         }
 
@@ -1005,12 +1101,44 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
         if (bookingCancelMatch && method === "POST") {
           assertScope(principal, "bookings:write");
           const idemKey = resolveIdempotencyKey(req, bodyObj);
+          const pathTemplate = "/v1/bookings/:bookingId/cancel";
+          const reqHash = sha256Hex(canonicalJsonStringify({ bookingId: bookingCancelMatch[1], ...(bodyObj ?? {}) }));
+          if (idemKey) {
+            const cached = await tryReplayApiIdempotency({
+              environmentId: principal.environmentId,
+              tenantScope: tenantId,
+              method,
+              pathTemplate,
+              idempotencyKey: idemKey,
+              requestHash: reqHash,
+            });
+            if (cached) {
+              reply(cached.status, cached.body, { "X-Idempotent-Replay": "true" });
+              return;
+            }
+          }
           const booking = await client.cancelBooking(
             { ...(bodyObj ?? {}), bookingId: bookingCancelMatch[1]! } as never,
             idemKey ? { idempotencyKey: idemKey } : undefined,
           );
-          await recordApiUsage(tenantId, "booking_cancelled");
-          sendJson(res, 200, { booking });
+          const payload = { booking };
+          if (idemKey) {
+            await saveApiIdempotency({
+              environmentId: principal.environmentId,
+              tenantScope: tenantId,
+              method,
+              pathTemplate,
+              idempotencyKey: idemKey,
+              requestHash: reqHash,
+              responseStatus: 200,
+              responseBody: payload,
+            });
+          }
+          await recordApiUsage(tenantId, {
+            metric: "booking_cancelled",
+            ...(idemKey ? { mutationIdempotencyKey: idemKey } : {}),
+          });
+          reply(200, payload);
           return;
         }
 
@@ -1023,7 +1151,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             idemKey ? { idempotencyKey: idemKey } : undefined,
           );
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { booking });
+          reply(200, { booking });
           return;
         }
 
@@ -1036,7 +1164,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             idemKey ? { idempotencyKey: idemKey } : undefined,
           );
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { booking });
+          reply(200, { booking });
           return;
         }
 
@@ -1045,7 +1173,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           assertScope(principal, "bookings:read");
           const history = await client.getBookingHistory("booking", bookingHistoryMatch[1]!);
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { items: history });
+          reply(200, { items: history });
           return;
         }
 
@@ -1066,7 +1194,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             ...(parsed.data.eventTypes !== undefined ? { eventTypes: parsed.data.eventTypes } : {}),
           });
           await recordApiUsage(tenantId);
-          sendJson(res, 201, created);
+          reply(201, created);
           return;
         }
 
@@ -1074,7 +1202,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
           assertScope(principal, "webhooks:read");
           const endpoints = await options.platform.listWebhookEndpoints(principal.environmentId, tenantId);
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { items: endpoints });
+          reply(200, { items: endpoints });
           return;
         }
 
@@ -1087,7 +1215,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             endpointMatch[1]!,
           );
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { endpoint });
+          reply(200, { endpoint });
           return;
         }
 
@@ -1104,7 +1232,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             limit: limitParam ? Number(limitParam) : undefined,
           });
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { items: deliveries });
+          reply(200, { items: deliveries });
           return;
         }
 
@@ -1117,11 +1245,11 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
             replayMatch[1]!,
           );
           await recordApiUsage(tenantId);
-          sendJson(res, 200, { delivery });
+          reply(200, { delivery });
           return;
         }
 
-        sendJson(res, 404, {
+        reply(404, {
           error: {
             code: "NOT_FOUND",
             category: "not_found",
@@ -1212,7 +1340,7 @@ export function createPlatformHttpServer(options: PlatformApiServerOptions): Ser
                 errorCodeForLog,
               ],
             )
-            .catch(() => {});
+            .catch(() => { });
         }
       }
     })();

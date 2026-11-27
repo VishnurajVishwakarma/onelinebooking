@@ -22,6 +22,7 @@ export async function POST(req: Request) {
       keyId?: string;
     };
     const ctx = await requireAuthorizedWorkspace({
+      req,
       minRole: "developer",
       tenantId: body.tenantId ?? null,
     });

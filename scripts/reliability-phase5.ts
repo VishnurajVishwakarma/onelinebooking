@@ -234,13 +234,15 @@ try {
       );
     }
 
-    // Apply 0002_v1_schema through 0005_phase7_security_and_ops on top of populated M1 DB
+    // Apply 0002_v1_schema through 0007_outbox_sequence_integrity on top of populated M1 DB
     const applied = await runMigrations(migPool);
     assert.deepEqual(applied, [
       "0002_v1_schema",
       "0003_v1_performance_indexes",
       "0004_platform_schema",
       "0005_phase7_security_and_ops",
+      "0006_phase8_auth_and_billing",
+      "0007_outbox_sequence_integrity",
     ]);
 
     const v1Holds = await migPool.query<{ cnt: string }>("SELECT COUNT(*)::text AS cnt FROM holds WHERE tenant_id = $1", [tId]);

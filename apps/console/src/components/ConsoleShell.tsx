@@ -25,6 +25,7 @@ const NAV_ITEMS = [
   { href: "/bookings", label: "Bookings & Customers" },
   { href: "/webhooks", label: "Webhooks" },
   { href: "/observability", label: "Usage & Logs" },
+  { href: "/billing", label: "Billing & Quotas" },
   { href: "/playground", label: "Playground & SDK" },
 ];
 

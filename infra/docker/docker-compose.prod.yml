@@ -1,0 +1,82 @@
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 400
+      DEFAULT_POOL_SIZE: 50
+      MAX_DB_CONNECTIONS: 70
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_IDLE_TIMEOUT: 30
+      SERVER_LIFETIME: 1800
+      IDLE_TRANSACTION_TIMEOUT: 60
+      SERVER_RESET_QUERY: DISCARD ALL
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "127.0.0.1:6432:5432"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    environment:
+      NODE_ENV: production
+      PORT: 4100
+      PGBOUNCER_URL: postgres://postgres:${POSTGRES_PASSWORD}@pgbouncer:5432/mygamingslot
+      PG_MAX_CONNECTIONS: 100
+      PGBOUNCER_DEFAULT_POOL_SIZE: 60
+      API_INSTANCE_COUNT: 4
+      OLB_WEBHOOK_MASTER_KEY: ${OLB_WEBHOOK_MASTER_KEY}
+      AWS_KMS_KEY_ID: ${AWS_KMS_KEY_ID:-}
+    ports:
+      - "4100:4100"
+    depends_on:
+      - pgbouncer
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/v1/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  workers:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    command: ["node", "dist/src/platform/bin/run-workers.js"]
+    environment:
+      NODE_ENV: production
+      PGBOUNCER_URL: postgres://postgres:${POSTGRES_PASSWORD}@pgbouncer:5432/mygamingslot
+      PG_MAX_CONNECTIONS: 100
+      API_INSTANCE_COUNT: 4
+      OLB_WEBHOOK_MASTER_KEY: ${OLB_WEBHOOK_MASTER_KEY}
+    depends_on:
+      - pgbouncer
+    restart: unless-stopped
+
+  console:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.console
+    environment:
+      NODE_ENV: production
+      PGBOUNCER_URL: postgres://postgres:${POSTGRES_PASSWORD}@pgbouncer:5432/mygamingslot
+      DATABASE_URL: ${DATABASE_URL}
+      OLB_WEBHOOK_MASTER_KEY: ${OLB_WEBHOOK_MASTER_KEY}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - pgbouncer
+    restart: unless-stopped
+
+  docs:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.docs
+    ports:
+      - "4300:4300"
+    restart: unless-stopped
+

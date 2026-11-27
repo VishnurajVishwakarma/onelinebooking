@@ -1553,7 +1553,7 @@ export class PostgresBookingStore implements BookingStore {
            actor_json, facility_time_zone, configuration_revision, pricing_revision, cancellation_policy_snapshot,
            starts_at, ends_at, occupied_from, occupied_until, total_minor, currency,
            sequence, metadata, created_at, updated_at
-         ) VALUES ($1,$2,'confirmed',$3,$4,$5,$6::jsonb,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,1,$17::jsonb,$18,$18)
+         ) VALUES ($1,$2,'confirmed',$3,$4,$5,$6::jsonb,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,2,$17::jsonb,$18,$18)
          RETURNING *`,
         [
           ctx.tenantId,

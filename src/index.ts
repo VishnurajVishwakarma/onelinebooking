@@ -179,13 +179,35 @@ export {
 } from "./platform/runtime/observability.js";
 export type { ReadinessReport, RetentionCleanupResult, TraceContext } from "./platform/runtime/observability.js";
 export {
+  AwsKmsEnvelopeProvider,
   decryptSecret,
+  decryptWithKmsEnvelope,
   encryptSecret,
+  encryptWithKeyring,
+  encryptWithKmsEnvelope,
   hashPassword,
   maskWebhookSecret,
   resolveMasterEncryptionKey,
+  resolveMasterKeyring,
   verifyPassword,
 } from "./platform/security/crypto.js";
+export type { AwsKmsConfig, KmsEnvelopeClient, KmsKeyring } from "./platform/security/crypto.js";
+export { SmtpEmailTransport } from "./platform/security/mailer.js";
+export type { EmailMessage, EmailTransport } from "./platform/security/mailer.js";
+export {
+  BillingService,
+  ManualInvoicingProvider,
+  SandboxStripePaymentProvider,
+} from "./platform/billing.js";
+export type {
+  BillingInvoice,
+  BillingPlanVersion,
+  BillingSubscription,
+  LedgerEntryType,
+  OveragePolicy,
+  PaymentProviderAdapter,
+  SubscriptionStatus,
+} from "./platform/billing.js";
 export {
   isRestrictedIpAddress,
   sendSsrfProtectedWebhookPost,

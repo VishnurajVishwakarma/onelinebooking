@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Book My Game — Multi-Outlet Gaming Cafe Pilot</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f172a; color: #f1f5f9; padding: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; max-width: 1120px; margin: 0 auto; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 16px; }
+    button { background: #38bdf8; color: #082f49; border: none; padding: 9px 14px; border-radius: 6px; font-weight: 700; cursor: pointer; }
+    input, select { width: 100%; padding: 8px; margin: 6px 0 12px; background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div style="max-width:1120px;margin:0 auto 20px;">
+    <h1 style="margin:0;">Book My Game</h1>
+    <p style="margin:4px 0 0;color:#94a3b8;">Multi-outlet PC &amp; PS5 reservation pilot using OneLineBooking REST API + @onelinebooking/sdk</p>
+  </div>
+  <div class="grid">
+    <section class="card">
+      <h2>Outlet Onboarding &amp; Inventory</h2>
+      <button id="onboard-btn">Provision 2 Outlets (PC + PS5)</button>
+      <label>Station<select id="fac-select"></select></label>
+      <label>Date<input id="date-input" type="date" /></label>
+      <button id="avail-btn">Load Availability</button>
+      <div id="slots-box" style="margin-top:10px;"></div>
+    </section>
+    <section class="card">
+      <h2>Online &amp; Walk-In Desk</h2>
+      <label>Customer ID<input id="cust-input" value="gamer-arjun" /></label>
+      <pre id="desk-log" style="font-size:12px;white-space:pre-wrap;"></pre>
+    </section>
+  </div>
+  <script>
+    const d = document.getElementById("date-input");
+    d.value = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    const facSel = document.getElementById("fac-select");
+    const slotsBox = document.getElementById("slots-box");
+    const log = document.getElementById("desk-log");
+
+    async function refreshInv() {
+      const r = await fetch("/api/pilot/inventory");
+      const j = await r.json();
+      facSel.innerHTML = (j.items || []).map(f => `<option value="${f.id}">${f.name}</option>`).join("");
+    }
+    document.getElementById("onboard-btn").onclick = async () => {
+      await fetch("/api/pilot/onboard", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ effectiveFrom: d.value }) });
+      await refreshInv();
+    };
+    document.getElementById("avail-btn").onclick = async () => {
+      const r = await fetch(`/api/pilot/availability?facilityId=${facSel.value}&fromDate=${d.value}`);
+      const j = await r.json();
+      slotsBox.innerHTML = "";
+      for (const s of (j.slots || []).slice(0, 6)) {
+        const b = document.createElement("button");
+        b.style.margin = "4px";
+        b.disabled = !s.available;
+        b.textContent = `${s.localStart} (${s.available ? "Open" : "Busy"})`;
+        b.onclick = async () => {
+          const cust = document.getElementById("cust-input").value;
+          const res = await fetch("/api/pilot/reserve/walk-in", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ facilityId: s.facilityId, slotRefs: [s.slotRef], customerId: cust, payAtCounter: true }),
+          });
+          log.textContent = JSON.stringify(await res.json(), null, 2);
+        };
+        slotsBox.appendChild(b);
+      }
+    };
+    refreshInv();
+  </script>
+</body>
+</html>
+

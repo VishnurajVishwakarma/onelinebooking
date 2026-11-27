@@ -89,7 +89,7 @@ async function runPhase7OpsSuite(): Promise<void> {
   const tenant = await platform.createScopedTenant({
     organizationId: organization.id,
     projectId: proj.project.id,
-    environmentId: proj.liveEnvironment.id,
+    environmentId: proj.testEnvironment.id,
     name: "Ops Tenant",
   });
 
@@ -232,7 +232,7 @@ async function runPhase7OpsSuite(): Promise<void> {
     const endpoint = await platform.createWebhookEndpoint({
       organizationId: organization.id,
       projectId: proj.project.id,
-      environmentId: proj.liveEnvironment.id,
+      environmentId: proj.testEnvironment.id,
       tenantId: tenant.id,
       url: `http://127.0.0.1:${hookPort}/events`,
     });

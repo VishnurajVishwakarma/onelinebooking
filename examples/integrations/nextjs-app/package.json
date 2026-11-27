@@ -1,0 +1,16 @@
+{
+  "name": "olb-nextjs-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@onelinebooking/sdk": "file:../../../packages/sdk"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

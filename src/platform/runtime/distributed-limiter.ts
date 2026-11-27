@@ -2,6 +2,12 @@ import type { Pool } from "pg";
 import { BookingError } from "../../domain/errors.js";
 import type { RateLimitDecision } from "./concurrency-limiter.js";
 
+export interface DistributedTenantLease {
+  (): Promise<void>;
+  readonly leaseId: string;
+  renew: (extendSeconds?: number) => Promise<boolean>;
+}
+
 export interface DistributedLimiterOptions {
   instanceId: string;
   rateLimitWindowMs: number;
@@ -70,7 +76,7 @@ export class PostgresDistributedLimiter {
    * Acquires a cross-instance expiring lease slot for `tenantScope` under an advisory transaction lock.
    * Ensures crashed instances cannot permanently hold concurrency slots past `leaseTtlSeconds`.
    */
-  async acquireTenantLease(tenantScope: string): Promise<() => Promise<void>> {
+  async acquireTenantLease(tenantScope: string): Promise<DistributedTenantLease> {
     const client = await this.pool.connect();
     let leaseId: string | null = null;
     try {
@@ -123,13 +129,34 @@ export class PostgresDistributedLimiter {
     }
 
     let released = false;
-    return async () => {
-      if (released || !leaseId) return;
+    const assignedLeaseId = leaseId;
+    const poolRef = this.pool;
+    const defaultTtl = this.options.leaseTtlSeconds;
+
+    const releaseFn = (async () => {
+      if (released || !assignedLeaseId) return;
       released = true;
-      await this.pool
-        .query(`DELETE FROM distributed_tenant_leases WHERE id = $1`, [leaseId])
+      await poolRef
+        .query(`DELETE FROM distributed_tenant_leases WHERE id = $1`, [assignedLeaseId])
         .catch(() => {});
+    }) as DistributedTenantLease;
+
+    Object.defineProperty(releaseFn, "leaseId", {
+      value: assignedLeaseId,
+      enumerable: true,
+    });
+    releaseFn.renew = async (extendSeconds = defaultTtl): Promise<boolean> => {
+      if (released) return false;
+      const upd = await poolRef.query(
+        `UPDATE distributed_tenant_leases
+         SET expires_at = now() + ($2::int * interval '1 second')
+         WHERE id = $1 AND expires_at > now()`,
+        [assignedLeaseId, extendSeconds],
+      );
+      return (upd.rowCount ?? 0) > 0;
     };
+
+    return releaseFn;
   }
 }
 

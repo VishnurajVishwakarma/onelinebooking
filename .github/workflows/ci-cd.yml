@@ -1,0 +1,53 @@
+name: OneLineBooking CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: mygamingslot
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres -d mygamingslot"
+          --health-interval=5s --health-retries=10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/mygamingslot
+      OLB_WEBHOOK_MASTER_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm --prefix packages/sdk run build
+      - run: npm --prefix apps/console ci && npm --prefix apps/console run build
+      - run: npm run db:migrate
+      - run: npm run test:all
+
+  deploy-staging:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container images (API, Console, Docs)
+        run: |
+          docker build -f infra/docker/Dockerfile.api -t olb-api:${{ github.sha }} .
+          docker build -f infra/docker/Dockerfile.console -t olb-console:${{ github.sha }} .
+          docker build -f infra/docker/Dockerfile.docs -t olb-docs:${{ github.sha }} .
+      - name: Staging deployment & readiness gate placeholder
+        run: echo "Deploy migrations -> rolling ECS/K8s rollout -> verify GET /v1/ready; rollback on non-200."
+

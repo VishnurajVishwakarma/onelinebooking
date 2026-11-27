@@ -1,0 +1,13 @@
+{
+  "name": "book-my-game-pilot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@onelinebooking/sdk": "file:../../packages/sdk"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}
+

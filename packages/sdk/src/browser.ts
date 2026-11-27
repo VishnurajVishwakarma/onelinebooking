@@ -69,7 +69,7 @@ export class OneLineBookingPublicClient {
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.maxRetries = options.maxRetries ?? 2;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 100;
-    this.fetchImpl = options.fetchFn ?? fetch;
+    this.fetchImpl = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.extraHeaders = options.headers ?? {};
 
     this.availability = {
@@ -113,7 +113,12 @@ export class OneLineBookingPublicClient {
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < totalAttempts; attempt++) {
+      if (opts?.signal?.aborted) {
+        throw opts.signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+      }
       const controller = new AbortController();
+      const onCallerAbort = () => controller.abort(opts?.signal?.reason);
+      opts?.signal?.addEventListener("abort", onCallerAbort, { once: true });
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
         const headers: Record<string, string> = {
@@ -130,6 +135,7 @@ export class OneLineBookingPublicClient {
           signal: controller.signal,
         });
         clearTimeout(timer);
+        opts?.signal?.removeEventListener("abort", onCallerAbort);
         const parsed = (await res.json().catch(() => null)) as unknown;
         if (res.ok) return parsed as T;
 
@@ -143,7 +149,8 @@ export class OneLineBookingPublicClient {
         if (
           canRetry &&
           (res.status === 429 || res.status === 503 || res.status === 504) &&
-          attempt + 1 < totalAttempts
+          attempt + 1 < totalAttempts &&
+          !opts?.signal?.aborted
         ) {
           await new Promise((r) => setTimeout(r, this.retryBaseDelayMs * 2 ** attempt));
           lastErr = apiErr;
@@ -152,6 +159,8 @@ export class OneLineBookingPublicClient {
         throw apiErr;
       } catch (err) {
         clearTimeout(timer);
+        opts?.signal?.removeEventListener("abort", onCallerAbort);
+        if (opts?.signal?.aborted) throw err;
         if (err instanceof OneLineBookingApiError) throw err;
         lastErr = err;
         if (canRetry && attempt + 1 < totalAttempts) {

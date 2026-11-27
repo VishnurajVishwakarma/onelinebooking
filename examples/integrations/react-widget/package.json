@@ -1,0 +1,21 @@
+{
+  "name": "olb-react-widget-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "bundle": "esbuild mount.tsx --bundle --format=esm --platform=browser --outfile=dist/widget.js"
+  },
+  "dependencies": {
+    "@onelinebooking/sdk": "file:../../../packages/sdk",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "esbuild": "^0.25.4",
+    "typescript": "^5.9.3"
+  }
+}

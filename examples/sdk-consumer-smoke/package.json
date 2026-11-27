@@ -1,0 +1,10 @@
+{
+  "name": "sdk-consumer-smoke",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@onelinebooking/sdk": "file:../../packages/sdk"
+  }
+}
+

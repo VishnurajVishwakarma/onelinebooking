@@ -21,7 +21,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const { backend, session } = await requireConsoleSession();
+    const { backend, session } = await requireConsoleSession(req);
     const body = (await req.json()) as {
       action: "create_org" | "invite_member" | "accept_invite" | "assign_project_role";
       name?: string;

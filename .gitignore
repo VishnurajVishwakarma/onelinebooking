@@ -4,3 +4,12 @@ dist/
 .env.*
 !.env.example
 coverage/
+apps/console/.next/
+examples/**/dist/
+examples/**/node_modules/
+infra/terraform/.terraform/
+reports/
+*.tsbuildinfo
+*.heapsnapshot
+pgbouncer.ini
+userlist.txt

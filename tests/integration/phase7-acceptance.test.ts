@@ -143,13 +143,13 @@ describe("Phase 7 Private Beta Acceptance Suite: Security, Distributed Limits, C
         url: `${hookBase}/events`,
       });
 
-      // Verify DB stored encrypted secret and NULL plaintext
+      // Verify DB stored encrypted secret and NULL plaintext (supports enc.v1 and KMS enc.v2)
       const dbEpRes = await pool.query<{ signing_secret: string | null; signing_secret_encrypted: string | null }>(
         `SELECT signing_secret, signing_secret_encrypted FROM webhook_endpoints WHERE id = $1`,
         [epCreated.endpoint.id],
       );
       assert.equal(dbEpRes.rows[0]!.signing_secret, null);
-      assert.ok(dbEpRes.rows[0]!.signing_secret_encrypted?.startsWith("enc.v1."));
+      assert.match(dbEpRes.rows[0]!.signing_secret_encrypted ?? "", /^enc\.v[12]\./);
 
       // Rotate webhook secret with 60m grace window
       const rotated = await localPlatform.rotateWebhookSecret({

@@ -1,15 +1,43 @@
 import { NextResponse } from "next/server";
-import { CONSOLE_SESSION_COOKIE, getConsoleBackend, jsonErrorResponse } from "@/lib/engine";
+import { CONSOLE_SESSION_COOKIE, getConsoleBackend, jsonErrorResponse, verifyConsoleCsrfOrigin } from "@/lib/engine";
 
 export async function POST(req: Request) {
   try {
+    verifyConsoleCsrfOrigin(req);
     const backend = await getConsoleBackend();
     const body = (await req.json()) as {
-      action: "register" | "login" | "logout";
+      action:
+      | "register"
+      | "login"
+      | "logout"
+      | "request_email_verification"
+      | "verify_email"
+      | "request_password_reset"
+      | "reset_password";
       email?: string;
       name?: string;
       password?: string;
+      token?: string;
+      newPassword?: string;
     };
+
+    if (body.action === "verify_email") {
+      const verified = await backend.auth.verifyEmail(body.token ?? "");
+      return NextResponse.json(verified);
+    }
+
+    if (body.action === "request_password_reset") {
+      await backend.auth.requestPasswordReset(body.email ?? "");
+      return NextResponse.json({ sent: true });
+    }
+
+    if (body.action === "reset_password") {
+      await backend.auth.resetPassword({
+        resetToken: body.token ?? "",
+        newPassword: body.newPassword ?? "",
+      });
+      return NextResponse.json({ reset: true });
+    }
 
     if (body.action === "logout") {
       const cookieHeader = req.headers.get("cookie") ?? "";

@@ -276,6 +276,7 @@ export class OutboxWebhookWorker {
       primarySecret: string;
       previousSecret?: string;
       endpointActive: boolean;
+      environmentType: "test" | "live";
     }> = [];
 
     try {
@@ -293,10 +294,12 @@ export class OutboxWebhookWorker {
         )
         SELECT d.*, e.url, e.signing_secret, e.signing_secret_encrypted,
                e.previous_signing_secret_encrypted, e.previous_secret_expires_at,
-               e.active AS endpoint_active
+               e.active AS endpoint_active,
+               env.type AS environment_type
         FROM webhook_deliveries d
         JOIN candidate c ON c.id = d.id
-        JOIN webhook_endpoints e ON e.id = d.endpoint_id`,
+        JOIN webhook_endpoints e ON e.id = d.endpoint_id
+        JOIN environments env ON env.id = d.environment_id`,
         [this.options.tenantFilter?.length ? this.options.tenantFilter : null, this.batchSize],
       );
 
@@ -313,6 +316,7 @@ export class OutboxWebhookWorker {
           primarySecret: secrets.primary,
           ...(secrets.previous ? { previousSecret: secrets.previous } : {}),
           endpointActive: Boolean(r.endpoint_active),
+          environmentType: (r.environment_type as "test" | "live") ?? "live",
         };
       });
 
@@ -387,12 +391,17 @@ export class OutboxWebhookWorker {
             clearTimeout(timeout);
           }
         } else {
+          // Strict network isolation: live environments NEVER permit HTTP or private/loopback endpoints
+          const effectiveSsrfOptions =
+            item.environmentType === "live"
+              ? { ...this.options.ssrfOptions, allowLocalHttpForTesting: false }
+              : this.options.ssrfOptions;
           const result = await sendSsrfProtectedWebhookPost({
             url: item.url,
             headers,
             body: payloadJson,
             timeoutMs: this.deliveryTimeoutMs,
-            ssrfOptions: this.options.ssrfOptions,
+            ssrfOptions: effectiveSsrfOptions,
           });
           status = result.status;
           excerpt = result.bodyExcerpt;

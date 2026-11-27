@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OneLineBooking — Booking Infrastructure as a Service</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #090d16; color: #f8fafc; line-height: 1.6; }
+    .wrap { max-width: 1020px; margin: 0 auto; padding: 48px 20px; }
+    .hero { padding: 40px 0; border-bottom: 1px solid #1e293b; }
+    .cta { display: inline-block; background: #38bdf8; color: #082f49; padding: 12px 20px; border-radius: 8px; font-weight: 700; text-decoration: none; margin-right: 12px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 32px; }
+    .card { background: #111827; border: 1px solid #1f2937; padding: 20px; border-radius: 10px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1 style="font-size:40px;margin:0 0 12px;">Booking Infrastructure Without Double-Booking Races</h1>
+      <p style="color:#94a3b8;font-size:18px;max-width:680px;">PostgreSQL GIST exclusion guarantees, two-phase holds, DST-safe timezones, idempotent REST APIs, signed webhooks, and typed TypeScript SDKs.</p>
+      <div style="margin-top:24px;">
+        <a class="cta" href="/console">Open Developer Console</a>
+        <a class="cta" style="background:#1e293b;color:#f8fafc;" href="/docs">Read API Docs</a>
+      </div>
+    </section>
+    <section class="cards">
+      <div class="card"><h2>Zero Double-Bookings</h2><p>Transactional exclusion constraints &amp; advisory locking enforce strict single-slot exclusivity under concurrency.</p></div>
+      <div class="card"><h2>SSRF-Safe Signed Webhooks</h2><p>AES-256-GCM encrypted secrets, dual-signature rotation grace periods, and IP-pinned outbound delivery.</p></div>
+      <div class="card"><h2>Multi-Tenant Ready</h2><p>Organizations, projects, isolated test/live environments, scoped API keys, and usage metering out of the box.</p></div>
+    </section>
+  </main>
+</body>
+</html>
+

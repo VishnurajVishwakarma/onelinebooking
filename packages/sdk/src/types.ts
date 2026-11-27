@@ -119,5 +119,6 @@ export interface SdkRequestOptions {
   idempotencyKey?: string;
   correlationId?: string;
   tenantId?: string;
+  signal?: AbortSignal;
 }
 

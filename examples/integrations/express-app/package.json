@@ -1,0 +1,11 @@
+{
+  "name": "olb-express-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "express": "^5.1.0",
+    "@onelinebooking/sdk": "file:../../../packages/sdk"
+  }
+}
+

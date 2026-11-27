@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OneLineBooking Documentation</title>
+  <style>
+    :root { --bg: #0b1120; --surface: #111827; --border: #1f2937; --text: #f3f4f6; --muted: #9ca3af; --accent: #38bdf8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; display: grid; grid-template-columns: 270px 1fr; min-height: 100vh; }
+    aside { background: #090e1a; border-right: 1px solid var(--border); padding: 24px 16px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+    aside a { display: block; color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 6px; font-size: 14px; }
+    aside a:hover { background: #1e293b; color: #fff; }
+    main { padding: 36px 40px; max-width: 960px; }
+    section { padding-bottom: 32px; margin-bottom: 32px; border-bottom: 1px solid var(--border); }
+    h1, h2 { color: #fff; }
+    code, pre { background: #020617; border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, monospace; }
+    code { padding: 2px 6px; font-size: 13px; }
+    pre { padding: 14px; overflow-x: auto; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+    th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; font-size: 14px; }
+    @media (max-width: 820px) { body { grid-template-columns: 1fr; } aside { position: static; height: auto; } }
+  </style>
+</head>
+<body>
+  <aside aria-label="Documentation Navigation">
+    <h2 style="margin-top:0;font-size:17px;">OneLineBooking Docs</h2>
+    <p style="font-size:12px;color:var(--muted);">v1.0.0 Platform &amp; SDK</p>
+    <a href="#quickstart">1. 5-Minute Quickstart</a>
+    <a href="#authentication">2. Authentication</a>
+    <a href="#api-reference">3. API Reference (/v1)</a>
+    <a href="#sdk">4. SDK Documentation</a>
+    <a href="#lifecycle">5. Booking Lifecycle</a>
+    <a href="#resources">6. Resource Configuration</a>
+    <a href="#availability">7. Availability Generation</a>
+    <a href="#idempotency">8. Idempotency</a>
+    <a href="#errors">9. Error Handling</a>
+    <a href="#webhooks">10. Webhook Verification</a>
+    <a href="#rate-limits">11. Rate &amp; Concurrency Limits</a>
+    <a href="#environments">12. Test &amp; Live Environments</a>
+    <a href="#versioning">13. Migration &amp; Versioning Policy</a>
+  </aside>
+  <main>
+    <section id="quickstart">
+      <h1>1. Five-Minute Quickstart</h1>
+      <p>Install the typed SDK in your backend service (Node.js ESM or CommonJS):</p>
+      <pre>npm install @onelinebooking/sdk</pre>
+      <pre>import { OneLineBookingClient } from "@onelinebooking/sdk/server";
+
+const olb = new OneLineBookingClient({
+  baseUrl: process.env.OLB_API_URL,
+  apiKey: process.env.OLB_API_KEY, // olb_test_... or olb_live_...
+});
+
+const slots = await olb.availability.get({ facilityId, fromDate: "2026-12-01", toDate: "2026-12-01" });
+const hold = await olb.holds.create({ facilityId, slotRefs: [slots.slots[0].slotRef], externalCustomerId: "user-42" });
+const booking = await olb.holds.convert(hold.id, { expectedAmountMinor: slots.slots[0].amountMinor, expectedCurrency: slots.slots[0].currency });</pre>
+    </section>
+
+    <section id="authentication">
+      <h2>2. Authentication</h2>
+      <p>Authenticate all server requests with <code>Authorization: Bearer olb_test_...</code> or <code>olb_live_...</code>. Secrets are stored strictly as SHA-256 hashes (`key_hash`) and matched in constant time. Tenant, project, environment, and scopes are derived server-side from the credential; mismatched <code>X-Tenant-Id</code> headers fail with <code>403 FORBIDDEN</code>.</p>
+    </section>
+
+    <section id="api-reference">
+      <h2>3. API Reference (<code>/v1</code>)</h2>
+      <table>
+        <thead><tr><th>Endpoint</th><th>Scope</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /v1/health</code>, <code>GET /v1/ready</code>, <code>GET /v1/metrics</code></td><td>Public</td><td>Health, backlog readiness, and Prometheus metrics</td></tr>
+          <tr><td><code>GET/POST /v1/tenants</code></td><td><code>tenants:read|write</code></td><td>Manage project/environment-scoped tenants</td></tr>
+          <tr><td><code>GET/POST /v1/facilities</code>, <code>/v1/locations</code></td><td><code>facilities:read|write</code></td><td>Manage venues and bookable resources</td></tr>
+          <tr><td><code>PUT /v1/facilities/:id/{schedule,slot-policy,pricing}</code></td><td><code>facilities:write</code></td><td>Configure weekly windows, cadence, buffers, price</td></tr>
+          <tr><td><code>POST /v1/facilities/:id/blackouts</code></td><td><code>facilities:write</code></td><td>Create maintenance blocks</td></tr>
+          <tr><td><code>GET /v1/availability</code>, <code>POST /v1/availability/check</code></td><td><code>availability:read</code></td><td>Read bookable slots and check selection pricing/validity</td></tr>
+          <tr><td><code>POST /v1/holds</code>, <code>POST /v1/holds/:id/convert</code>, <code>DELETE /v1/holds/:id</code></td><td><code>holds:write</code></td><td>Two-phase hold placement, conversion, and release</td></tr>
+          <tr><td><code>POST /v1/bookings</code>, <code>GET /v1/bookings</code>, <code>POST /v1/bookings/:id/cancel</code></td><td><code>bookings:read|write</code></td><td>Direct booking, cursor pagination, cancellation, lifecycle history</td></tr>
+          <tr><td><code>POST/GET /v1/webhooks/*</code></td><td><code>webhooks:read|write</code></td><td>Manage encrypted webhook endpoints &amp; replay deliveries</td></tr>
+          <tr><td><code>GET /v1/usage</code></td><td><code>usage:read</code></td><td>Query append-only deduplicated usage counters</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="sdk">
+      <h2>4. SDK Documentation (Browser vs Server Boundaries)</h2>
+      <ul>
+        <li><code>@onelinebooking/sdk/server</code>: Full client + <code>verifyWebhookSignature</code> (requires Node.js; refuses secret <code>olb_*</code> instantiation in browser <code>window</code>).</li>
+        <li><code>@onelinebooking/sdk/browser</code>: <code>OneLineBookingPublicClient</code> talks to your BFF proxy URL cleanly with zero secret keys in browser bundles.</li>
+        <li>Both ESM (<code>import</code>) and CommonJS (<code>require</code>) entrypoints are compiled and exported cleanly.</li>
+      </ul>
+    </section>
+
+    <section id="lifecycle">
+      <h2>5. Booking Lifecycle</h2>
+      <p>Two-phase holds prevent race conditions during checkout: <code>active hold &rarr; convertHoldToBooking &rarr; confirmed booking &rarr; completed | cancelled | no_show</code>. Expired or released holds free PostgreSQL GIST exclusion allocations atomically. Walk-in or pay-at-counter desks can call <code>bookings.create</code> directly.</p>
+    </section>
+
+    <section id="resources">
+      <h2>6. Resource Configuration</h2>
+      <p>Create physical <code>locations</code> and attach individual bookable resources (<code>facilities</code>). Schedules support weekday hours, overnight windows (<code>endDayOffset: 1</code>), breaks, calendar-date exceptions, slot overrides, buffer before/after rules, cancellation policy, and configuration revisioning (<code>configurationRevision</code>).</p>
+    </section>
+
+    <section id="availability">
+      <h2>7. Availability Generation</h2>
+      <p>Availability evaluates operating schedules in each facility's IANA timezone across DST spring-forward gaps and fall-back folds, applies outer buffers around contiguous multi-slot selections, and filters against active blackouts, holds, and bookings inside PostgreSQL repeatable-read snapshots.</p>
+    </section>
+
+    <section id="idempotency">
+      <h2>8. Idempotency</h2>
+      <p>Send <code>Idempotency-Key</code> on mutating calls. Requests serialize cleanly inside PostgreSQL via canonical request hash checks and advisory locks. Reusing a key with identical payload replays the exact response (`X-Idempotent-Replay: true`); reusing with a modified payload returns <code>409 IDEMPOTENCY_KEY_CONFLICT</code>.</p>
+    </section>
+
+    <section id="errors">
+      <h2>9. Error Handling</h2>
+      <p>Every error returns <code>{ error: { code, category, message, retryable, retryAfterSeconds?, correlationId } }</code>. Retry ONLY when <code>retryable === true</code> (HTTP 429 / 503) using exponential backoff while preserving the exact <code>Idempotency-Key</code>.</p>
+    </section>
+
+    <section id="webhooks">
+      <h2>10. Webhook Verification</h2>
+      <p>Verify <code>X-OneLine-Signature: t=&lt;unix&gt;,v1=&lt;hmac&gt;</code> using <code>verifyWebhookSignature()</code> within a 300s window. During secret rotation grace windows, multiple <code>v1=</code> signatures are included. Always deduplicate deliveries on <code>X-OneLine-Event-Id</code> (at-least-once delivery).</p>
+    </section>
+
+    <section id="rate-limits">
+      <h2>11. Rate &amp; Concurrency Limits</h2>
+      <p>Every API response returns <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, and <code>X-RateLimit-Reset</code>. Multi-instance limits coordinate via PostgreSQL counters and expiring tenant concurrency leases (<code>429 RATE_LIMITED</code> + <code>Retry-After</code>).</p>
+    </section>
+
+    <section id="environments">
+      <h2>12. Test &amp; Live Environments</h2>
+      <p>Keys and tenants are strictly bound to <code>test</code> (<code>olb_test_*</code>) or <code>live</code> (<code>olb_live_*</code>). Cross-environment requests fail with <code>403 FORBIDDEN</code>. Live environments enforce HTTPS-only webhook destinations with SSRF private/loopback/metadata IP blocking and disable the Console Playground.</p>
+    </section>
+
+    <section id="versioning">
+      <h2>13. Migration &amp; Versioning Policy</h2>
+      <p>API endpoints are prefixed with <code>/v1</code>; additive JSON fields are non-breaking. PostgreSQL migrations (<code>0001</code>..<code>0006</code>) are forward-only and additive to support rolling multi-instance zero-downtime deployments.</p>
+    </section>
+  </main>
+</body>
+</html>
+

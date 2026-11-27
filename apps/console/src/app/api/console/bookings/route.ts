@@ -57,6 +57,7 @@ export async function POST(req: Request) {
       reason?: string;
     };
     const ctx = await requireAuthorizedWorkspace({
+      req,
       minRole: "developer",
       tenantId: body.tenantId ?? null,
     });

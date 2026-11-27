@@ -268,15 +268,15 @@ describe("Phase 6 Integration Tests: Multi-Tenant Platform, REST API, Webhooks &
     const tenant = await platform.createScopedTenant({
       organizationId: organization.id,
       projectId: proj.project.id,
-      environmentId: proj.liveEnvironment.id,
-      name: "Arena Live",
+      environmentId: proj.testEnvironment.id,
+      name: "Arena Test",
     });
     const apiKey = await platform.createApiKey({
       organizationId: organization.id,
       projectId: proj.project.id,
-      environmentId: proj.liveEnvironment.id,
+      environmentId: proj.testEnvironment.id,
       tenantId: tenant.id,
-      name: "Live Server Key",
+      name: "Test Server Key",
       scopes: ALL_PLATFORM_SCOPES,
     });
 
@@ -509,13 +509,15 @@ describe("Phase 6 Integration Tests: Multi-Tenant Platform, REST API, Webhooks &
       );
       await webhookWorker.deliverPendingWebhooks(); // attempt 2 -> dead_letter
       const dlq = await sdkA.webhooks.listDeliveries({ status: "dead_letter" });
-      assert.equal(dlq.length, 1);
+      assert.equal(dlq.length, 2);
 
-      // Restore webhook receiver & replay
+      // Restore webhook receiver & replay every dead-lettered delivery (booking.created + booking.confirmed)
       webhookFailMode = false;
-      const replayed = await sdkA.webhooks.replayDelivery(dlq[0]!.id);
-      assert.equal(replayed.status, "pending");
-      assert.equal(replayed.replayedCount, 1);
+      for (const item of dlq) {
+        const replayed = await sdkA.webhooks.replayDelivery(item.id);
+        assert.equal(replayed.status, "pending");
+        assert.equal(replayed.replayedCount, 1);
+      }
       await webhookWorker.deliverPendingWebhooks();
       const afterReplay = await sdkA.webhooks.listDeliveries({ status: "dead_letter" });
       assert.equal(afterReplay.length, 0);
@@ -539,7 +541,7 @@ describe("Phase 6 Integration Tests: Multi-Tenant Platform, REST API, Webhooks &
       const u1 = await platform.recordUsage({
         organizationId: organization.id,
         projectId: proj.project.id,
-        environmentId: proj.liveEnvironment.id,
+        environmentId: proj.testEnvironment.id,
         tenantId: tenant.id,
         metric: "api_request",
         quantity: 5,
@@ -548,7 +550,7 @@ describe("Phase 6 Integration Tests: Multi-Tenant Platform, REST API, Webhooks &
       const u2 = await platform.recordUsage({
         organizationId: organization.id,
         projectId: proj.project.id,
-        environmentId: proj.liveEnvironment.id,
+        environmentId: proj.testEnvironment.id,
         tenantId: tenant.id,
         metric: "api_request",
         quantity: 5,
