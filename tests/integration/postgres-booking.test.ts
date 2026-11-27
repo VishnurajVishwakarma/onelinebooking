@@ -21,13 +21,17 @@ let dbAvailable = false;
 
 if (DATABASE_URL) {
   const candidate = createBookingPool(DATABASE_URL);
+  let connected = false;
   try {
     await candidate.query("SELECT 1");
+    connected = true;
+  } catch {
+    await candidate.end().catch(() => {});
+  }
+  if (connected) {
     await runMigrations(candidate);
     pool = candidate;
     dbAvailable = true;
-  } catch {
-    await candidate.end().catch(() => {});
   }
 }
 
@@ -160,12 +164,15 @@ describe("PostgreSQL integration and concurrency matrix (§14.2 & §14.3)", { sk
     const history = await admin.getBookingHistory("booking", booking.id);
     assert.ok(history.length >= 2);
 
-    const claimed = await engine.claimEvents({ limit: 20, leaseSeconds: 30 });
-    const bookingEvents = claimed.filter((e) => e.aggregateId === booking.id);
-    assert.ok(bookingEvents.some((e) => e.eventType === "booking.created"));
-    assert.ok(bookingEvents.some((e) => e.eventType === "booking.confirmed"));
-    assert.ok(bookingEvents.some((e) => e.eventType === "booking.cancelled"));
-    for (const ev of claimed) {
+    const bookingEventsRes = await pool!.query<{ event_type: string }>(
+      `SELECT event_type FROM outbox_events WHERE tenant_id = $1 AND aggregate_id = $2 ORDER BY aggregate_sequence ASC`,
+      [tenant.id, booking.id],
+    );
+    const eventTypes = bookingEventsRes.rows.map((r) => r.event_type);
+    assert.deepEqual(eventTypes, ["booking.created", "booking.confirmed", "booking.cancelled"]);
+
+    const claimed = await engine.claimEvents({ limit: 50, leaseSeconds: 30 });
+    for (const ev of claimed.filter((e) => e.tenantId === tenant.id)) {
       await engine.ackEvent(ev.id, ev.leaseToken!);
     }
 

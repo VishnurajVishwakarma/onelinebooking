@@ -1,0 +1,351 @@
+export const OPENAPI_V1_SPEC = {
+  openapi: "3.1.0",
+  info: {
+    title: "OneLineBooking Platform API",
+    version: "1.0.0",
+    description:
+      "Multi-tenant, PostgreSQL-backed booking infrastructure REST API supporting availability queries, two-phase holds, bookings, webhooks, and usage metering.",
+  },
+  servers: [
+    {
+      url: "/",
+      description: "Current API host",
+    },
+  ],
+  security: [{ BearerAuth: [] }],
+  components: {
+    securitySchemes: {
+      BearerAuth: {
+        type: "http",
+        scheme: "bearer",
+        bearerFormat: "olb_test_<id>_<secret> | olb_live_<id>_<secret>",
+        description:
+          "Scoped environment/tenant API key. Tenant & environment context is derived server-side from the credential.",
+      },
+    },
+    parameters: {
+      IdempotencyKeyHeader: {
+        name: "Idempotency-Key",
+        in: "header",
+        required: false,
+        schema: { type: "string", minLength: 1, maxLength: 128 },
+        description: "Client-generated key guaranteeing safe exactly-once API mutation replay.",
+      },
+      TenantIdHeader: {
+        name: "X-Tenant-Id",
+        in: "header",
+        required: false,
+        schema: { type: "string", format: "uuid" },
+        description:
+          "Required only for environment-wide API keys. Must belong to the credential's authenticated environment.",
+      },
+      CorrelationIdHeader: {
+        name: "X-Correlation-Id",
+        in: "header",
+        required: false,
+        schema: { type: "string" },
+      },
+    },
+    schemas: {
+      ErrorEnvelope: {
+        type: "object",
+        required: ["error"],
+        properties: {
+          error: {
+            type: "object",
+            required: ["code", "category", "message", "retryable"],
+            properties: {
+              code: { type: "string" },
+              category: { type: "string" },
+              message: { type: "string" },
+              retryable: { type: "boolean" },
+              retryAfterSeconds: { type: "integer" },
+              correlationId: { type: "string" },
+              details: { type: "object", additionalProperties: true },
+            },
+          },
+        },
+      },
+      Tenant: {
+        type: "object",
+        required: ["id", "name", "status", "environmentType", "createdAt"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          name: { type: "string" },
+          status: { type: "string", enum: ["active", "archived"] },
+          environmentId: { type: "string", format: "uuid" },
+          environmentType: { type: "string", enum: ["test", "live"] },
+          metadata: { type: "object", additionalProperties: true },
+          createdAt: { type: "string", format: "date-time" },
+        },
+      },
+      Facility: {
+        type: "object",
+        required: ["id", "tenantId", "name", "category", "timeZone", "active", "configurationRevision"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          tenantId: { type: "string", format: "uuid" },
+          name: { type: "string" },
+          category: { type: "string" },
+          timeZone: { type: "string" },
+          active: { type: "boolean" },
+          configurationRevision: { type: "integer" },
+          metadata: { type: "object", additionalProperties: true },
+        },
+      },
+      HoldResult: {
+        type: "object",
+        required: [
+          "holdId",
+          "facilityId",
+          "customerId",
+          "status",
+          "startsAtUtc",
+          "endsAtUtc",
+          "expiresAtUtc",
+          "quotedPriceMinor",
+          "currency",
+        ],
+        properties: {
+          holdId: { type: "string", format: "uuid" },
+          facilityId: { type: "string", format: "uuid" },
+          customerId: { type: "string" },
+          status: { type: "string", enum: ["held", "converted", "released", "expired"] },
+          startsAtUtc: { type: "string", format: "date-time" },
+          endsAtUtc: { type: "string", format: "date-time" },
+          expiresAtUtc: { type: "string", format: "date-time" },
+          quotedPriceMinor: { type: "integer" },
+          currency: { type: "string" },
+        },
+      },
+      BookingSummary: {
+        type: "object",
+        required: [
+          "bookingId",
+          "facilityId",
+          "customerId",
+          "status",
+          "startsAtUtc",
+          "endsAtUtc",
+          "totalMinor",
+          "currency",
+        ],
+        properties: {
+          bookingId: { type: "string", format: "uuid" },
+          facilityId: { type: "string", format: "uuid" },
+          customerId: { type: "string" },
+          status: { type: "string", enum: ["confirmed", "cancelled", "completed", "no_show"] },
+          startsAtUtc: { type: "string", format: "date-time" },
+          endsAtUtc: { type: "string", format: "date-time" },
+          totalMinor: { type: "integer" },
+          currency: { type: "string" },
+        },
+      },
+    },
+  },
+  paths: {
+    "/v1/health": {
+      get: {
+        summary: "Health & capacity status",
+        security: [],
+        responses: {
+          "200": { description: "Healthy" },
+          "503": { description: "Database unreachable" },
+        },
+      },
+    },
+    "/v1/openapi.json": {
+      get: {
+        summary: "Retrieve OpenAPI 3.1 specification",
+        security: [],
+        responses: { "200": { description: "OpenAPI document" } },
+      },
+    },
+    "/v1/tenants": {
+      get: {
+        summary: "List tenants within authenticated environment",
+        parameters: [
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+        ],
+        responses: {
+          "200": { description: "Paginated tenant list" },
+          "401": { description: "Unauthorized" },
+        },
+      },
+      post: {
+        summary: "Provision a tenant within authenticated environment",
+        parameters: [{ $ref: "#/components/parameters/IdempotencyKeyHeader" }],
+        responses: {
+          "201": { description: "Tenant created" },
+          "403": { description: "Insufficient scope" },
+        },
+      },
+    },
+    "/v1/facilities": {
+      get: {
+        summary: "List facilities for authenticated tenant",
+        parameters: [
+          { $ref: "#/components/parameters/TenantIdHeader" },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+        ],
+        responses: { "200": { description: "Facility list" } },
+      },
+      post: {
+        summary: "Create a facility",
+        parameters: [
+          { $ref: "#/components/parameters/TenantIdHeader" },
+          { $ref: "#/components/parameters/IdempotencyKeyHeader" },
+        ],
+        responses: { "201": { description: "Facility created" } },
+      },
+    },
+    "/v1/facilities/{facilityId}": {
+      get: {
+        summary: "Get facility details",
+        parameters: [{ name: "facilityId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Facility" }, "404": { description: "Not found" } },
+      },
+    },
+    "/v1/facilities/{facilityId}/schedule": {
+      put: {
+        summary: "Set weekly schedule windows",
+        parameters: [{ name: "facilityId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Schedule updated" } },
+      },
+    },
+    "/v1/facilities/{facilityId}/slot-policy": {
+      put: {
+        summary: "Set slot duration, interval, buffers, advance and notice rules",
+        parameters: [{ name: "facilityId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Slot policy updated" } },
+      },
+    },
+    "/v1/facilities/{facilityId}/pricing": {
+      put: {
+        summary: "Set facility base pricing rule",
+        parameters: [{ name: "facilityId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Pricing updated" } },
+      },
+    },
+    "/v1/facilities/{facilityId}/blackouts": {
+      post: {
+        summary: "Create maintenance blackout interval",
+        parameters: [{ name: "facilityId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "201": { description: "Blackout created" } },
+      },
+    },
+    "/v1/locations": {
+      post: {
+        summary: "Create a physical business location for tenant facilities",
+        responses: { "201": { description: "Location created" } },
+      },
+    },
+    "/v1/availability": {
+      get: {
+        summary: "Query bookable slots across a business date range",
+        parameters: [
+          { name: "facilityId", in: "query", required: true, schema: { type: "string", format: "uuid" } },
+          { name: "fromDate", in: "query", required: true, schema: { type: "string", format: "date" } },
+          { name: "toDate", in: "query", required: true, schema: { type: "string", format: "date" } },
+        ],
+        responses: { "200": { description: "Computed availability slots" } },
+      },
+    },
+    "/v1/holds": {
+      post: {
+        summary: "Place a temporary slot hold",
+        parameters: [{ $ref: "#/components/parameters/IdempotencyKeyHeader" }],
+        responses: {
+          "201": { description: "Hold created" },
+          "409": { description: "Slot conflict or limit exceeded" },
+        },
+      },
+    },
+    "/v1/holds/{holdId}": {
+      get: {
+        summary: "Fetch hold by ID",
+        parameters: [{ name: "holdId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Hold" }, "404": { description: "Not found" } },
+      },
+      delete: {
+        summary: "Release an active hold",
+        parameters: [{ name: "holdId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Hold released" } },
+      },
+    },
+    "/v1/holds/{holdId}/convert": {
+      post: {
+        summary: "Convert an active hold to a confirmed booking",
+        parameters: [
+          { name: "holdId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          { $ref: "#/components/parameters/IdempotencyKeyHeader" },
+        ],
+        responses: { "200": { description: "Booking confirmed" } },
+      },
+    },
+    "/v1/bookings": {
+      post: {
+        summary: "Create a direct confirmed booking",
+        parameters: [{ $ref: "#/components/parameters/IdempotencyKeyHeader" }],
+        responses: { "201": { description: "Booking confirmed" }, "409": { description: "Slot conflict" } },
+      },
+      get: {
+        summary: "List bookings with cursor pagination",
+        parameters: [
+          { name: "facilityId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "customerId", in: "query", schema: { type: "string" } },
+          { name: "status", in: "query", schema: { type: "string" } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+        ],
+        responses: { "200": { description: "Paginated booking list" } },
+      },
+    },
+    "/v1/bookings/{bookingId}": {
+      get: {
+        summary: "Get booking by ID",
+        parameters: [{ name: "bookingId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Booking" }, "404": { description: "Not found" } },
+      },
+    },
+    "/v1/bookings/{bookingId}/cancel": {
+      post: {
+        summary: "Cancel a booking",
+        parameters: [{ name: "bookingId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Booking cancelled" } },
+      },
+    },
+    "/v1/webhooks/endpoints": {
+      post: {
+        summary: "Register a signed webhook endpoint",
+        responses: { "201": { description: "Endpoint created with one-time signingSecret" } },
+      },
+      get: {
+        summary: "List webhook endpoints (secrets redacted)",
+        responses: { "200": { description: "Webhook endpoints" } },
+      },
+    },
+    "/v1/webhooks/deliveries": {
+      get: {
+        summary: "List webhook delivery history",
+        responses: { "200": { description: "Delivery attempts & statuses" } },
+      },
+    },
+    "/v1/webhooks/deliveries/{deliveryId}/replay": {
+      post: {
+        summary: "Replay a failed/dead-letter/delivered webhook delivery",
+        parameters: [{ name: "deliveryId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Delivery queued for replay" } },
+      },
+    },
+    "/v1/usage": {
+      get: {
+        summary: "Query aggregated usage metrics",
+        responses: { "200": { description: "Usage summary" } },
+      },
+    },
+  },
+} as const;
+

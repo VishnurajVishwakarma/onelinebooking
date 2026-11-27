@@ -80,6 +80,31 @@ function formatOffsetMinutes(minutes: number): string {
   return `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
 }
 
+function getConstantOffsetMinutes(businessDate: ISODate, timeZone: string): number | null {
+  const base = DateTime.fromISO(`${businessDate}T00:00`, { zone: timeZone });
+  if (!base.isValid) return null;
+  const off0 = base.offset;
+  for (const hrs of [12, 24, 36, 48]) {
+    if (base.plus({ hours: hrs }).offset !== off0) return null;
+  }
+  return off0;
+}
+
+function formatUtcOffsetDateTime(epochMs: number, offsetMinutes: number): string {
+  const shifted = new Date(epochMs + offsetMinutes * 60_000);
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(shifted.getUTCDate()).padStart(2, "0");
+  const hh = String(shifted.getUTCHours()).padStart(2, "0");
+  const mm = String(shifted.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+function utcMidnightMs(businessDate: ISODate): number {
+  const [y, m, d] = businessDate.split("-").map(Number);
+  return Date.UTC(y!, m! - 1, d!, 0, 0, 0, 0);
+}
+
 function minutesToLocalDateAndTime(businessDate: ISODate, totalMinutes: number): { localDate: ISODate; localTime: string } {
   const dayOffset = Math.floor(totalMinutes / 1440);
   const rem = totalMinutes % 1440;
@@ -291,12 +316,14 @@ export function generateCandidatesForBusinessDate(params: {
   occupied: OccupiedInterval[];
   asOf: Date;
   bypassMinNotice?: boolean | undefined;
+  maxCandidates?: number | undefined;
 }): CandidateWithWindow[] {
   const {
     facilityId, configurationRevision, businessDate, timeZone,
     weeklyWindows, exceptions, overrides, policy, pricing, occupied, asOf,
   } = params;
   const bypassMinNotice = params.bypassMinNotice ?? false;
+  const maxCandidates = params.maxCandidates;
 
   const rawWindows = getEffectiveWindowsForBusinessDate(businessDate, timeZone, weeklyWindows, exceptions);
   const resolvedWindows = resolveWindowsForBusinessDate(businessDate, timeZone, rawWindows);
@@ -317,6 +344,8 @@ export function generateCandidatesForBusinessDate(params: {
   );
 
   const byInterval = new Map<string, { start: Date; end: Date; window: ResolvedWindow }>();
+  const constOffset = getConstantOffsetMinutes(businessDate, timeZone);
+  const baseUtcMs = constOffset !== null ? utcMidnightMs(businessDate) - constOffset * 60_000 : 0;
 
   for (const resolved of resolvedWindows) {
     const raw = resolved.raw;
@@ -324,6 +353,28 @@ export function generateCandidatesForBusinessDate(params: {
 
     const openMin = parseMinutes(raw.opensAt);
     const closeMin = raw.endDayOffset * 1440 + parseMinutes(raw.closesAt);
+
+    if (constOffset !== null) {
+      const openMs = resolved.opening.getTime();
+      const closeMs = resolved.closing.getTime();
+      for (let m = openMin; m < closeMin; m += policy.intervalMinutes) {
+        const startMs = baseUtcMs + m * 60_000;
+        const endMs = startMs + durationMs;
+        if (startMs >= openMs && endMs <= closeMs) {
+          const key = `${startMs}:${endMs}`;
+          if (!suppressedKeys.has(key) && !byInterval.has(key)) {
+            byInterval.set(key, { start: new Date(startMs), end: new Date(endMs), window: resolved });
+            if (maxCandidates !== undefined && byInterval.size > maxCandidates) {
+              throw new BookingError(
+                "QUERY_LIMIT_EXCEEDED",
+                `Availability query exceeds candidate limit of ${maxCandidates}`,
+              );
+            }
+          }
+        }
+      }
+      continue;
+    }
 
     for (let m = openMin; m < closeMin; m += policy.intervalMinutes) {
       const { localDate, localTime } = minutesToLocalDateAndTime(businessDate, m);
@@ -337,6 +388,12 @@ export function generateCandidatesForBusinessDate(params: {
           const key = `${startInstant.getTime()}:${endInstant.getTime()}`;
           if (!suppressedKeys.has(key) && !byInterval.has(key)) {
             byInterval.set(key, { start: startInstant, end: endInstant, window: resolved });
+            if (maxCandidates !== undefined && byInterval.size > maxCandidates) {
+              throw new BookingError(
+                "QUERY_LIMIT_EXCEEDED",
+                `Availability query exceeds candidate limit of ${maxCandidates}`,
+              );
+            }
           }
         }
       }
@@ -367,12 +424,27 @@ export function generateCandidatesForBusinessDate(params: {
   );
 
   const results: CandidateWithWindow[] = [];
+  const constOffsetStr = constOffset !== null ? formatOffsetMinutes(constOffset) : null;
   for (const entry of byInterval.values()) {
-    const startDt = DateTime.fromJSDate(entry.start, { zone: timeZone });
-    const endDt = DateTime.fromJSDate(entry.end, { zone: timeZone });
+    const startMs = entry.start.getTime();
+    const endMs = entry.end.getTime();
+    let localStart: string;
+    let localEnd: string;
+    let localOffset: string;
+    if (constOffset !== null && constOffsetStr !== null) {
+      localStart = formatUtcOffsetDateTime(startMs, constOffset);
+      localEnd = formatUtcOffsetDateTime(endMs, constOffset);
+      localOffset = constOffsetStr;
+    } else {
+      const startDt = DateTime.fromJSDate(entry.start, { zone: timeZone });
+      const endDt = DateTime.fromJSDate(entry.end, { zone: timeZone });
+      localStart = startDt.toFormat("yyyy-LL-dd'T'HH:mm");
+      localEnd = endDt.toFormat("yyyy-LL-dd'T'HH:mm");
+      localOffset = formatOffsetMinutes(startDt.offset);
+    }
     const reasonCode = evaluateCandidateStatus(
-      entry.start.getTime(),
-      entry.end.getTime(),
+      startMs,
+      endMs,
       entry.window,
       policy,
       relevantOccupied,
@@ -382,21 +454,15 @@ export function generateCandidatesForBusinessDate(params: {
     );
     const slot: AvailabilitySlot = {
       facilityId,
-      slotRef: encodeSlotRef({
-        facilityId,
-        businessDate,
-        configurationRevision,
-        startsAt: entry.start,
-        endsAt: entry.end,
-      }),
+      slotRef: `v1.${facilityId}.${businessDate}.${configurationRevision}.${startMs}.${endMs}`,
       configurationRevision,
       businessDate,
       startsAt: entry.start,
       endsAt: entry.end,
-      localStart: startDt.toFormat("yyyy-LL-dd'T'HH:mm"),
-      localEnd: endDt.toFormat("yyyy-LL-dd'T'HH:mm"),
+      localStart,
+      localEnd,
       timeZone,
-      localOffset: formatOffsetMinutes(startDt.offset),
+      localOffset,
       available: reasonCode === null,
       reasonCode,
       amountMinor: pricing ? pricing.amountMinor : null,
@@ -406,8 +472,8 @@ export function generateCandidatesForBusinessDate(params: {
       slot,
       window: entry.window,
       occupiedRange: {
-        startsAt: new Date(entry.start.getTime() - policy.bufferBeforeMinutes * 60_000),
-        endsAt: new Date(entry.end.getTime() + policy.bufferAfterMinutes * 60_000),
+        startsAt: new Date(startMs - policy.bufferBeforeMinutes * 60_000),
+        endsAt: new Date(endMs + policy.bufferAfterMinutes * 60_000),
       },
     });
   }
@@ -446,6 +512,7 @@ export function generateAvailabilitySlots(input: GenerateSlotsForRangeInput): Av
       occupied: input.occupied,
       asOf: input.asOf,
       bypassMinNotice: input.bypassMinNotice,
+      maxCandidates: maxCandidates - collected.length + 1,
     });
     for (const item of candidates) {
       const localStartDate = item.slot.localStart.slice(0, 10);
@@ -522,37 +589,98 @@ export function validateSlotSelection(params: {
     }
   }
 
-  const uniqueBusinessDates = [...new Set(sortedDecoded.map((d) => d.businessDate))];
-  const candidatesByDate = new Map<ISODate, CandidateWithWindow[]>();
-  for (const bDate of uniqueBusinessDates) {
-    candidatesByDate.set(
-      bDate,
-      generateCandidatesForBusinessDate({
-        facilityId,
-        configurationRevision,
-        businessDate: bDate,
-        timeZone,
-        weeklyWindows,
-        exceptions,
-        overrides,
-        policy,
-        pricing,
-        occupied,
-        asOf,
-        bypassMinNotice,
-      }),
-    );
+  const durationMs = policy.durationMinutes * 60_000;
+  const horizonEndMs = DateTime.fromJSDate(asOf, { zone: timeZone })
+    .startOf("day")
+    .plus({ days: policy.maxAdvanceDays })
+    .toMillis();
+
+  // Direct verification per businessDate without generating unused slots on the day
+  const resolvedByDate = new Map<ISODate, ResolvedWindow[]>();
+  for (const ref of sortedDecoded) {
+    if (!resolvedByDate.has(ref.businessDate)) {
+      const raw = getEffectiveWindowsForBusinessDate(ref.businessDate, timeZone, weeklyWindows, exceptions);
+      resolvedByDate.set(ref.businessDate, resolveWindowsForBusinessDate(ref.businessDate, timeZone, raw));
+    }
   }
 
   const matched: CandidateWithWindow[] = sortedDecoded.map((ref) => {
-    const list = candidatesByDate.get(ref.businessDate) ?? [];
-    const found = list.find(
-      (c) => c.slot.startsAt.getTime() === ref.startsAt.getTime() && c.slot.endsAt.getTime() === ref.endsAt.getTime(),
-    );
-    if (!found) {
-      throw new BookingError("SLOT_NOT_FOUND", `Slot ${ref.startsAt.toISOString()} is not a valid candidate`);
+    const startMs = ref.startsAt.getTime();
+    const endMs = ref.endsAt.getTime();
+    if (endMs - startMs !== durationMs) {
+      throw new BookingError("SLOT_NOT_FOUND", `Slot ${ref.startsAt.toISOString()} does not match configured duration`);
     }
-    return found;
+
+    const dateOverrides = overrides.filter((item) => item.businessDate === ref.businessDate);
+    if (dateOverrides.some((ov) => ov.action === "suppress" && ov.startsAt.getTime() === startMs && ov.endsAt.getTime() === endMs)) {
+      throw new BookingError("SLOT_NOT_FOUND", `Slot ${ref.startsAt.toISOString()} is suppressed`);
+    }
+
+    const windowsForDate = resolvedByDate.get(ref.businessDate) ?? [];
+    const matchingWindow = windowsForDate.find((w) => startMs >= w.opening.getTime() && endMs <= w.closing.getTime());
+    if (!matchingWindow || !matchingWindow.raw) {
+      throw new BookingError("SLOT_NOT_FOUND", `Slot ${ref.startsAt.toISOString()} is outside effective operating windows`);
+    }
+
+    const isExplicitAdd = dateOverrides.some((ov) => ov.action === "add" && ov.startsAt.getTime() === startMs && ov.endsAt.getTime() === endMs);
+    const startDt = DateTime.fromJSDate(ref.startsAt, { zone: timeZone });
+    const endDt = DateTime.fromJSDate(ref.endsAt, { zone: timeZone });
+    const startLocalDate = startDt.toISODate()!;
+    const startLocalMin = startDt.hour * 60 + startDt.minute;
+    const dayDiff = Math.round((utcMidnightMs(startLocalDate) - utcMidnightMs(ref.businessDate)) / 86_400_000);
+
+    if (!isExplicitAdd) {
+      if (startDt.second !== 0 || startDt.millisecond !== 0 || dayDiff < 0 || dayDiff > 1) {
+        throw new BookingError("SLOT_NOT_FOUND", `Slot ${ref.startsAt.toISOString()} does not align to schedule cadence`);
+      }
+      const mFromBusinessDay = dayDiff * 1440 + startLocalMin;
+      const openMin = parseMinutes(matchingWindow.raw.opensAt);
+      const closeMin = matchingWindow.raw.endDayOffset * 1440 + parseMinutes(matchingWindow.raw.closesAt);
+      if (mFromBusinessDay < openMin || mFromBusinessDay >= closeMin || (mFromBusinessDay - openMin) % policy.intervalMinutes !== 0) {
+        throw new BookingError("SLOT_NOT_FOUND", `Slot ${ref.startsAt.toISOString()} does not align to schedule cadence`);
+      }
+    }
+
+    const reasonCode = evaluateCandidateStatus(
+      startMs,
+      endMs,
+      matchingWindow,
+      policy,
+      occupied,
+      horizonEndMs,
+      asOf.getTime(),
+      bypassMinNotice,
+    );
+    const slot: AvailabilitySlot = {
+      facilityId,
+      slotRef: encodeSlotRef({
+        facilityId,
+        businessDate: ref.businessDate,
+        configurationRevision,
+        startsAt: ref.startsAt,
+        endsAt: ref.endsAt,
+      }),
+      configurationRevision,
+      businessDate: ref.businessDate,
+      startsAt: ref.startsAt,
+      endsAt: ref.endsAt,
+      localStart: startDt.toFormat("yyyy-LL-dd'T'HH:mm"),
+      localEnd: endDt.toFormat("yyyy-LL-dd'T'HH:mm"),
+      timeZone,
+      localOffset: formatOffsetMinutes(startDt.offset),
+      available: reasonCode === null,
+      reasonCode,
+      amountMinor: pricing ? pricing.amountMinor : null,
+      currency: pricing ? pricing.currency : null,
+    };
+    return {
+      slot,
+      window: matchingWindow,
+      occupiedRange: {
+        startsAt: new Date(startMs - policy.bufferBeforeMinutes * 60_000),
+        endsAt: new Date(endMs + policy.bufferAfterMinutes * 60_000),
+      },
+    };
   });
 
   const first = matched[0]!;

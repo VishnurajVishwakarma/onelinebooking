@@ -120,7 +120,14 @@ export interface ItemRow extends QueryResultRow {
 
 export const pgTime = (value: string): string => value.slice(0, 5);
 export const asDate = (value: Date | string): Date => (value instanceof Date ? value : new Date(value));
-export const isoDate = (value: Date | string): string => (value instanceof Date ? value.toISOString().slice(0, 10) : value.slice(0, 10));
+export const isoDate = (value: Date | string): string => {
+  if (typeof value === "string") return value.slice(0, 10);
+  // node-postgres parses SQL `date` columns as local-midnight JS Dates.
+  const y = String(value.getFullYear());
+  const m = String(value.getMonth() + 1).padStart(2, "0");
+  const d = String(value.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
 
 export function toTenant(row: TenantRow): Tenant {
   return {
@@ -294,51 +301,49 @@ export async function loadFacilityConfig(
   tenantId: UUID,
   facilityId: UUID,
 ): Promise<FacilityConfig> {
-  const [policyRes, pricingRes, cancelRes, schedRes, excRes, ovRes] = await Promise.all([
-    client.query(
-      `SELECT duration_minutes, interval_minutes, min_notice_minutes, max_advance_days,
-              buffer_before_minutes, buffer_after_minutes, max_slots_per_booking,
-              default_hold_minutes, max_active_holds_per_customer, revision
-       FROM slot_policies WHERE tenant_id = $1 AND facility_id = $2`,
-      [tenantId, facilityId],
-    ),
-    client.query(
-      `SELECT facility_id, revision, amount_minor, currency, created_at
-       FROM pricing_rules WHERE tenant_id = $1 AND facility_id = $2 AND active = true`,
-      [tenantId, facilityId],
-    ),
-    client.query(
-      `SELECT customer_cancellation_allowed, min_notice_minutes, admin_override_allowed, revision
-       FROM cancellation_policies WHERE tenant_id = $1 AND facility_id = $2 AND active = true`,
-      [tenantId, facilityId],
-    ),
-    client.query(
-      `SELECT s.weekday, s.opens_at::text, s.closes_at::text, s.end_day_offset,
-              s.effective_from::text, s.effective_until::text,
-              COALESCE(json_agg(json_build_object(
-                'startsAt', br.starts_at::text,
-                'endsAt', br.ends_at::text,
-                'startDayOffset', br.start_day_offset,
-                'endDayOffset', br.end_day_offset
-              )) FILTER (WHERE br.id IS NOT NULL), '[]'::json) AS breaks
-       FROM facility_schedules s
-       LEFT JOIN schedule_breaks br ON br.schedule_id = s.id
-       WHERE s.tenant_id = $1 AND s.facility_id = $2 AND s.active = true
-       GROUP BY s.id
-       ORDER BY s.weekday, s.opens_at`,
-      [tenantId, facilityId],
-    ),
-    client.query(
-      `SELECT id, facility_id, business_date::text, is_closed, windows, revision
-       FROM schedule_exceptions WHERE tenant_id = $1 AND facility_id = $2`,
-      [tenantId, facilityId],
-    ),
-    client.query(
-      `SELECT id, facility_id, business_date::text, starts_at, ends_at, action, reason, configuration_revision
-       FROM slot_overrides WHERE tenant_id = $1 AND facility_id = $2`,
-      [tenantId, facilityId],
-    ),
-  ]);
+  const policyRes = await client.query(
+    `SELECT duration_minutes, interval_minutes, min_notice_minutes, max_advance_days,
+            buffer_before_minutes, buffer_after_minutes, max_slots_per_booking,
+            default_hold_minutes, max_active_holds_per_customer, revision
+     FROM slot_policies WHERE tenant_id = $1 AND facility_id = $2`,
+    [tenantId, facilityId],
+  );
+  const pricingRes = await client.query(
+    `SELECT facility_id, revision, amount_minor, currency, created_at
+     FROM pricing_rules WHERE tenant_id = $1 AND facility_id = $2 AND active = true`,
+    [tenantId, facilityId],
+  );
+  const cancelRes = await client.query(
+    `SELECT customer_cancellation_allowed, min_notice_minutes, admin_override_allowed, revision
+     FROM cancellation_policies WHERE tenant_id = $1 AND facility_id = $2 AND active = true`,
+    [tenantId, facilityId],
+  );
+  const schedRes = await client.query(
+    `SELECT s.weekday, s.opens_at::text, s.closes_at::text, s.end_day_offset,
+            s.effective_from::text, s.effective_until::text,
+            COALESCE(json_agg(json_build_object(
+              'startsAt', br.starts_at::text,
+              'endsAt', br.ends_at::text,
+              'startDayOffset', br.start_day_offset,
+              'endDayOffset', br.end_day_offset
+            )) FILTER (WHERE br.id IS NOT NULL), '[]'::json) AS breaks
+     FROM facility_schedules s
+     LEFT JOIN schedule_breaks br ON br.schedule_id = s.id
+     WHERE s.tenant_id = $1 AND s.facility_id = $2 AND s.active = true
+     GROUP BY s.id
+     ORDER BY s.weekday, s.opens_at`,
+    [tenantId, facilityId],
+  );
+  const excRes = await client.query(
+    `SELECT id, facility_id, business_date::text, is_closed, windows, revision
+     FROM schedule_exceptions WHERE tenant_id = $1 AND facility_id = $2`,
+    [tenantId, facilityId],
+  );
+  const ovRes = await client.query(
+    `SELECT id, facility_id, business_date::text, starts_at, ends_at, action, reason, configuration_revision
+     FROM slot_overrides WHERE tenant_id = $1 AND facility_id = $2`,
+    [tenantId, facilityId],
+  );
 
   const pRow = policyRes.rows[0];
   const policy: SlotPolicy | null = pRow
@@ -428,26 +433,24 @@ export async function loadOccupiedIntervals(
   until: Date,
   asOf: Date,
 ): Promise<OccupiedInterval[]> {
-  const [blocks, allocations] = await Promise.all([
-    client.query<{ starts_at: Date | string; ends_at: Date | string }>(
-      `SELECT starts_at, ends_at FROM facility_blocks
-       WHERE tenant_id = $1 AND facility_id = $2 AND active = true
-         AND starts_at < $4 AND ends_at > $3`,
-      [tenantId, facilityId, from, until],
-    ),
-    client.query<{
-      occupied_start: Date | string;
-      occupied_end: Date | string;
-      service_start: Date | string;
-      service_end: Date | string;
-    }>(
-      `SELECT occupied_start, occupied_end, service_start, service_end FROM allocations
-       WHERE tenant_id = $1 AND facility_id = $2
-         AND (status = 'reserved' OR (status = 'held' AND expires_at > $5))
-         AND occupied_start < $4 AND occupied_end > $3`,
-      [tenantId, facilityId, from, until, asOf],
-    ),
-  ]);
+  const blocks = await client.query<{ starts_at: Date | string; ends_at: Date | string }>(
+    `SELECT starts_at, ends_at FROM facility_blocks
+     WHERE tenant_id = $1 AND facility_id = $2 AND active = true
+       AND starts_at < $4 AND ends_at > $3`,
+    [tenantId, facilityId, from, until],
+  );
+  const allocations = await client.query<{
+    occupied_start: Date | string;
+    occupied_end: Date | string;
+    service_start: Date | string;
+    service_end: Date | string;
+  }>(
+    `SELECT occupied_start, occupied_end, service_start, service_end FROM allocations
+     WHERE tenant_id = $1 AND facility_id = $2
+       AND (status = 'reserved' OR (status = 'held' AND expires_at > $5))
+       AND occupied_range && tstzrange($3, $4, '[)')`,
+    [tenantId, facilityId, from, until, asOf],
+  );
 
   return [
     ...blocks.rows.map((r) => ({
@@ -539,59 +542,65 @@ export async function expireFacilityHolds(
   decisionTime: Date,
   onlyConflictingWith?: { startsAt: Date; endsAt: Date },
 ): Promise<UUID[]> {
+  // Deterministic lock order: holds (ORDER BY id) -> allocations (ORDER BY id)
   const params: unknown[] = [tenantId, facilityId, decisionTime];
-  let rangeClause = "";
+  let rangeJoin = "";
   if (onlyConflictingWith) {
-    params.push(onlyConflictingWith.endsAt, onlyConflictingWith.startsAt);
-    rangeClause = ` AND a.occupied_start < $4 AND a.occupied_end > $5`;
+    params.push(onlyConflictingWith.startsAt, onlyConflictingWith.endsAt);
+    rangeJoin = ` AND EXISTS (
+      SELECT 1 FROM allocations a
+      WHERE a.hold_id = h.id AND a.status = 'held' AND a.occupied_range && tstzrange($4, $5, '[)')
+    )`;
   }
 
   const expiredRes = await client.query<{ id: string; sequence: number }>(
     `SELECT h.id, h.sequence
      FROM holds h
-     JOIN allocations a ON a.hold_id = h.id
-     WHERE h.tenant_id = $1 AND h.facility_id = $2 AND h.state = 'active' AND h.expires_at <= $3
-       AND a.status = 'held'${rangeClause}
+     WHERE h.tenant_id = $1 AND h.facility_id = $2 AND h.state = 'active' AND h.expires_at <= $3${rangeJoin}
      ORDER BY h.id
-     FOR UPDATE OF h, a`,
+     FOR UPDATE`,
     params,
   );
 
   if (!expiredRes.rowCount) return [];
 
   const expiredIds = expiredRes.rows.map((r) => r.id);
-  for (const row of expiredRes.rows) {
-    const nextSeq = Number(row.sequence) + 1;
-    await client.query(
-      `UPDATE holds SET state = 'expired', expired_recorded_at = $2, sequence = $3, updated_at = $2 WHERE id = $1`,
-      [row.id, decisionTime, nextSeq],
-    );
-    await client.query(
-      `UPDATE allocations SET status = 'released', expires_at = NULL, released_at = $2, updated_at = $2
-       WHERE hold_id = $1 AND status = 'held'`,
-      [row.id, decisionTime],
-    );
-    await insertOutboxEvent(client, {
-      tenantId,
-      aggregateType: "hold",
-      aggregateId: row.id,
-      aggregateSequence: nextSeq,
-      eventType: "hold.expired",
-      payload: { holdId: row.id, facilityId, expiredRecordedAt: decisionTime.toISOString() },
-      occurredAt: decisionTime,
-    });
-    await insertAudit(client, {
-      tenantId,
-      aggregateType: "hold",
-      aggregateId: row.id,
-      facilityId,
-      action: "hold.expired",
-      actor: { id: "system-expiry", type: "system", capabilities: [] },
-      priorState: "active",
-      newState: "expired",
-      decisionAt: decisionTime,
-    });
-  }
+  const nextSeqs = expiredRes.rows.map((r) => Number(r.sequence) + 1);
+  await client.query(
+    `SELECT id FROM allocations WHERE hold_id = ANY($1::uuid[]) AND status = 'held' ORDER BY id FOR UPDATE`,
+    [expiredIds],
+  );
+
+  const actorJson = JSON.stringify({ id: "system-expiry", type: "system", capabilities: [] });
+  const payloads = expiredIds.map((id) =>
+    JSON.stringify({ holdId: id, facilityId, expiredRecordedAt: decisionTime.toISOString() }),
+  );
+
+  await client.query(
+    `WITH targets AS (
+       SELECT * FROM unnest($1::uuid[], $2::int[], $3::jsonb[]) AS t(id, next_seq, payload)
+     ),
+     upd_holds AS (
+       UPDATE holds h SET state = 'expired', expired_recorded_at = $4, sequence = t.next_seq, updated_at = $4
+       FROM targets t WHERE h.id = t.id
+     ),
+     upd_allocs AS (
+       UPDATE allocations SET status = 'released', expires_at = NULL, released_at = $4, updated_at = $4
+       WHERE hold_id = ANY($1::uuid[]) AND status = 'held'
+     ),
+     ins_outbox AS (
+       INSERT INTO outbox_events (
+         tenant_id, aggregate_type, aggregate_id, aggregate_sequence, event_type, schema_version, payload, occurred_at
+       )
+       SELECT $5, 'hold', t.id, t.next_seq, 'hold.expired', 1, t.payload, $4 FROM targets t
+     )
+     INSERT INTO booking_history (
+       tenant_id, aggregate_type, aggregate_id, facility_id, action, actor_json,
+       prior_state, new_state, diff_json, reason, correlation_id, decision_at
+     )
+     SELECT $5, 'hold', t.id, $6, 'hold.expired', $7::jsonb, 'active', 'expired', NULL, NULL, NULL, $4 FROM targets t`,
+    [expiredIds, nextSeqs, payloads, decisionTime, tenantId, facilityId, actorJson],
+  );
 
   return expiredIds;
 }
@@ -700,5 +709,229 @@ export async function evaluateConfigChangeImpact(
     }
   }
   return warnings;
+}
+
+export interface PostLockReservationContext {
+  decisionTime: Date;
+  config: FacilityConfig;
+  occupied: OccupiedInterval[];
+  activeCustomerHolds: number;
+  hasExpiredHolds: boolean;
+}
+
+/**
+ * Load post-lock authoritative clock, facility configuration, customer hold count,
+ * and GiST-filtered occupied intervals in a single SQL round trip.
+ */
+export async function loadPostLockReservationContext(
+  client: PoolClient,
+  params: {
+    tenantId: UUID;
+    facilityId: UUID;
+    businessDates: ISODate[];
+    externalCustomerId: string | null;
+    rangeStart: Date;
+    rangeEnd: Date;
+  },
+): Promise<PostLockReservationContext> {
+  const res = await client.query<{
+    decision_time: Date | string;
+    policy_json: Record<string, unknown> | null;
+    pricing_json: Record<string, unknown> | null;
+    cancel_json: Record<string, unknown> | null;
+    weekly_json: Array<Record<string, unknown>>;
+    exceptions_json: Array<Record<string, unknown>>;
+    overrides_json: Array<Record<string, unknown>>;
+    active_customer_holds: number;
+    has_expired_holds: boolean;
+    blocks_json: Array<{ starts_at: string; ends_at: string }>;
+    allocations_json: Array<{
+      occupied_start: string;
+      occupied_end: string;
+      service_start: string;
+      service_end: string;
+    }>;
+  }>(
+    `SELECT
+       clock_timestamp() AS decision_time,
+       (
+         SELECT row_to_json(sp) FROM (
+           SELECT duration_minutes, interval_minutes, min_notice_minutes, max_advance_days,
+                  buffer_before_minutes, buffer_after_minutes, max_slots_per_booking,
+                  default_hold_minutes, max_active_holds_per_customer, revision
+           FROM slot_policies WHERE tenant_id = $1 AND facility_id = $2
+         ) sp
+       ) AS policy_json,
+       (
+         SELECT row_to_json(pr) FROM (
+           SELECT facility_id, revision, amount_minor, currency, created_at
+           FROM pricing_rules WHERE tenant_id = $1 AND facility_id = $2 AND active = true
+         ) pr
+       ) AS pricing_json,
+       (
+         SELECT row_to_json(cp) FROM (
+           SELECT customer_cancellation_allowed, min_notice_minutes, admin_override_allowed, revision
+           FROM cancellation_policies WHERE tenant_id = $1 AND facility_id = $2 AND active = true
+         ) cp
+       ) AS cancel_json,
+       COALESCE((
+         SELECT json_agg(row_to_json(sw) ORDER BY sw.weekday, sw.opens_at) FROM (
+           SELECT s.weekday, s.opens_at::text, s.closes_at::text, s.end_day_offset,
+                  s.effective_from::text, s.effective_until::text,
+                  COALESCE(json_agg(json_build_object(
+                    'startsAt', br.starts_at::text,
+                    'endsAt', br.ends_at::text,
+                    'startDayOffset', br.start_day_offset,
+                    'endDayOffset', br.end_day_offset
+                  )) FILTER (WHERE br.id IS NOT NULL), '[]'::json) AS breaks
+           FROM facility_schedules s
+           LEFT JOIN schedule_breaks br ON br.schedule_id = s.id
+           WHERE s.tenant_id = $1 AND s.facility_id = $2 AND s.active = true
+           GROUP BY s.id
+         ) sw
+       ), '[]'::json) AS weekly_json,
+       COALESCE((
+         SELECT json_agg(row_to_json(ex)) FROM (
+           SELECT id, facility_id, business_date::text, is_closed, windows, revision
+           FROM schedule_exceptions
+           WHERE tenant_id = $1 AND facility_id = $2 AND business_date = ANY($3::date[])
+         ) ex
+       ), '[]'::json) AS exceptions_json,
+       COALESCE((
+         SELECT json_agg(row_to_json(ov)) FROM (
+           SELECT id, facility_id, business_date::text, starts_at, ends_at, action, reason, configuration_revision
+           FROM slot_overrides
+           WHERE tenant_id = $1 AND facility_id = $2 AND business_date = ANY($3::date[])
+         ) ov
+       ), '[]'::json) AS overrides_json,
+       CASE WHEN $4::text IS NULL THEN 0 ELSE (
+         SELECT COUNT(*)::int FROM holds
+         WHERE tenant_id = $1 AND facility_id = $2 AND external_customer_id = $4
+           AND state = 'active' AND expires_at > clock_timestamp()
+       ) END AS active_customer_holds,
+       EXISTS (
+         SELECT 1 FROM holds
+         WHERE tenant_id = $1 AND facility_id = $2 AND state = 'active' AND expires_at <= clock_timestamp()
+         LIMIT 1
+       ) AS has_expired_holds,
+       COALESCE((
+         SELECT json_agg(row_to_json(bl)) FROM (
+           SELECT starts_at, ends_at FROM facility_blocks
+           WHERE tenant_id = $1 AND facility_id = $2 AND active = true
+             AND starts_at < $6 AND ends_at > $5
+         ) bl
+       ), '[]'::json) AS blocks_json,
+       COALESCE((
+         SELECT json_agg(row_to_json(al)) FROM (
+           SELECT occupied_start, occupied_end, service_start, service_end
+           FROM allocations
+           WHERE tenant_id = $1 AND facility_id = $2
+             AND (status = 'reserved' OR (status = 'held' AND expires_at > clock_timestamp()))
+             AND occupied_range && tstzrange($5, $6, '[)')
+         ) al
+       ), '[]'::json) AS allocations_json`,
+    [params.tenantId, params.facilityId, params.businessDates, params.externalCustomerId, params.rangeStart, params.rangeEnd],
+  );
+
+  const row = res.rows[0]!;
+  const pRow = row.policy_json;
+  const policy: SlotPolicy | null = pRow
+    ? {
+        durationMinutes: Number(pRow.duration_minutes),
+        intervalMinutes: Number(pRow.interval_minutes),
+        minNoticeMinutes: Number(pRow.min_notice_minutes),
+        maxAdvanceDays: Number(pRow.max_advance_days),
+        bufferBeforeMinutes: Number(pRow.buffer_before_minutes),
+        bufferAfterMinutes: Number(pRow.buffer_after_minutes),
+        maxSlotsPerBooking: Number(pRow.max_slots_per_booking),
+        defaultHoldMinutes: Number(pRow.default_hold_minutes),
+        maxActiveHoldsPerCustomer: Number(pRow.max_active_holds_per_customer),
+        revision: Number(pRow.revision),
+      }
+    : null;
+
+  const prRow = row.pricing_json;
+  const pricing: PricingRule | null = prRow
+    ? {
+        facilityId: prRow.facility_id as string,
+        revision: Number(prRow.revision),
+        amountMinor: Number(prRow.amount_minor),
+        currency: String(prRow.currency).trim(),
+        createdAt: asDate(prRow.created_at as string),
+      }
+    : null;
+
+  const cRow = row.cancel_json;
+  const cancellationPolicy: CancellationPolicy = cRow
+    ? {
+        customerCancellationAllowed: Boolean(cRow.customer_cancellation_allowed),
+        minNoticeMinutes: Number(cRow.min_notice_minutes),
+        adminOverrideAllowed: Boolean(cRow.admin_override_allowed),
+        revision: Number(cRow.revision),
+      }
+    : {
+        customerCancellationAllowed: true,
+        minNoticeMinutes: 0,
+        adminOverrideAllowed: true,
+        revision: 1,
+      };
+
+  const weeklyWindows: ScheduleWindow[] = row.weekly_json.map((r) => ({
+    weekday: Number(r.weekday),
+    opensAt: pgTime(r.opens_at as string),
+    closesAt: pgTime(r.closes_at as string),
+    endDayOffset: Number(r.end_day_offset) as 0 | 1,
+    effectiveFrom: isoDate(r.effective_from as string),
+    effectiveUntil: r.effective_until ? isoDate(r.effective_until as string) : null,
+    breaks: (r.breaks as Array<{ startsAt: string; endsAt: string; startDayOffset: number; endDayOffset: number }>).map((b) => ({
+      startsAt: pgTime(b.startsAt),
+      endsAt: pgTime(b.endsAt),
+      startDayOffset: Number(b.startDayOffset) as 0 | 1,
+      endDayOffset: Number(b.endDayOffset) as 0 | 1,
+    })),
+  }));
+
+  const exceptions: ScheduleException[] = row.exceptions_json.map((r) => ({
+    id: r.id as string,
+    facilityId: r.facility_id as string,
+    businessDate: isoDate(r.business_date as string),
+    isClosed: Boolean(r.is_closed),
+    windows: (r.windows as ScheduleException["windows"]) ?? [],
+    revision: Number(r.revision),
+  }));
+
+  const overrides: SlotOverride[] = row.overrides_json.map((r) => ({
+    id: r.id as string,
+    facilityId: r.facility_id as string,
+    businessDate: isoDate(r.business_date as string),
+    startsAt: asDate(r.starts_at as string),
+    endsAt: asDate(r.ends_at as string),
+    action: r.action as SlotOverride["action"],
+    reason: r.reason as string,
+    configurationRevision: Number(r.configuration_revision),
+  }));
+
+  const occupied: OccupiedInterval[] = [
+    ...row.blocks_json.map((r) => ({
+      kind: "block" as const,
+      startsAt: asDate(r.starts_at),
+      endsAt: asDate(r.ends_at),
+    })),
+    ...row.allocations_json.map((r) => ({
+      kind: "allocation" as const,
+      startsAt: asDate(r.occupied_start),
+      endsAt: asDate(r.occupied_end),
+      serviceStart: asDate(r.service_start),
+      serviceEnd: asDate(r.service_end),
+    })),
+  ];
+
+  return {
+    decisionTime: asDate(row.decision_time),
+    config: { policy, pricing, cancellationPolicy, weeklyWindows, exceptions, overrides },
+    occupied,
+    activeCustomerHolds: Number(row.active_customer_holds),
+    hasExpiredHolds: Boolean(row.has_expired_holds),
+  };
 }
 

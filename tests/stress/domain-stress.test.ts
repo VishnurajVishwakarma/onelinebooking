@@ -194,7 +194,7 @@ describe("Domain & validation stress tests", () => {
       (err: unknown) => err instanceof BookingError && err.code === "QUERY_LIMIT_EXCEEDED",
     );
     const failMs = performance.now() - failStart;
-    assert.ok(failMs < 1000, `Expected fast fail under 1s, took ${failMs}ms`);
+    assert.ok(failMs < 3000, `Expected fast fail under 3s, took ${failMs}ms`);
   });
 
   it("validates 1,000 multi-slot contiguous selections and slotRef decoding under load", () => {

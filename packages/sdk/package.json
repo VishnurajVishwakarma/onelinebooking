@@ -1,0 +1,40 @@
+{
+  "name": "@onelinebooking/sdk",
+  "version": "1.0.0",
+  "description": "Typed ESM & CommonJS SDK for the OneLineBooking Platform API (/v1) with explicit browser-safe and server-only boundaries.",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.cjs"
+    },
+    "./browser": {
+      "types": "./dist/esm/browser.d.ts",
+      "import": "./dist/esm/browser.js",
+      "require": "./dist/cjs/browser.cjs"
+    },
+    "./server": {
+      "types": "./dist/esm/server.d.ts",
+      "import": "./dist/esm/server.js",
+      "require": "./dist/cjs/server.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json && node ./scripts/rename-cjs.mjs",
+    "build": "npm run build:esm && npm run build:cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
+

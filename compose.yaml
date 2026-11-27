@@ -16,5 +16,29 @@ services:
       timeout: 3s
       retries: 10
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    profiles: ["pgbouncer"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: mygamingslot
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 400
+      DEFAULT_POOL_SIZE: 60
+      RESERVE_POOL_SIZE: 10
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_RESET_QUERY: DISCARD ALL
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+    ports:
+      - "6432:5432"
+    restart: unless-stopped
+
 volumes:
   mygamingslot_postgres:

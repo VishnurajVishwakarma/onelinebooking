@@ -280,12 +280,10 @@ ALTER TABLE bookings
 -- Backfill occupied_from/occupied_until and facility_time_zone for any existing bookings
 UPDATE bookings b
 SET
-  facility_time_zone = COALESCE(f.time_zone, b.facility_time_zone),
-  occupied_from = COALESCE(b.occupied_from, a.reserved_from, b.starts_at),
-  occupied_until = COALESCE(b.occupied_until, a.reserved_until, b.ends_at)
-FROM facilities f
-LEFT JOIN booking_allocations a ON a.booking_id = b.id
-WHERE f.id = b.facility_id AND (b.occupied_from IS NULL OR b.occupied_until IS NULL);
+  facility_time_zone = COALESCE((SELECT f.time_zone FROM facilities f WHERE f.id = b.facility_id), b.facility_time_zone),
+  occupied_from = COALESCE(b.occupied_from, (SELECT a.reserved_from FROM booking_allocations a WHERE a.booking_id = b.id), b.starts_at),
+  occupied_until = COALESCE(b.occupied_until, (SELECT a.reserved_until FROM booking_allocations a WHERE a.booking_id = b.id), b.ends_at)
+WHERE b.occupied_from IS NULL OR b.occupied_until IS NULL;
 
 -- Migrate any M1 pending/expired bookings into holds (preserving IDs) before tightening bookings.status
 INSERT INTO holds (

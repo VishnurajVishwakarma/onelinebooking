@@ -1,0 +1,183 @@
+{
+  "version": 3,
+  "pages404": true,
+  "appType": "app",
+  "caseSensitive": false,
+  "basePath": "",
+  "redirects": [
+    {
+      "source": "/:path+/",
+      "destination": "/:path+",
+      "internal": true,
+      "priority": true,
+      "statusCode": 308,
+      "regex": "^(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))/$"
+    }
+  ],
+  "headers": [],
+  "onMatchHeaders": [],
+  "rewrites": {
+    "beforeFiles": [],
+    "afterFiles": [],
+    "fallback": []
+  },
+  "dynamicRoutes": [],
+  "staticRoutes": [
+    {
+      "page": "/",
+      "regex": "^/(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/(?:/)?$"
+    },
+    {
+      "page": "/_global-error",
+      "regex": "^/_global\\-error(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/_global\\-error(?:/)?$"
+    },
+    {
+      "page": "/_not-found",
+      "regex": "^/_not\\-found(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/_not\\-found(?:/)?$"
+    },
+    {
+      "page": "/api/console/auth",
+      "regex": "^/api/console/auth(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/auth(?:/)?$"
+    },
+    {
+      "page": "/api/console/bookings",
+      "regex": "^/api/console/bookings(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/bookings(?:/)?$"
+    },
+    {
+      "page": "/api/console/context",
+      "regex": "^/api/console/context(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/context(?:/)?$"
+    },
+    {
+      "page": "/api/console/credentials",
+      "regex": "^/api/console/credentials(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/credentials(?:/)?$"
+    },
+    {
+      "page": "/api/console/facilities",
+      "regex": "^/api/console/facilities(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/facilities(?:/)?$"
+    },
+    {
+      "page": "/api/console/onboarding",
+      "regex": "^/api/console/onboarding(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/onboarding(?:/)?$"
+    },
+    {
+      "page": "/api/console/organizations",
+      "regex": "^/api/console/organizations(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/organizations(?:/)?$"
+    },
+    {
+      "page": "/api/console/playground",
+      "regex": "^/api/console/playground(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/playground(?:/)?$"
+    },
+    {
+      "page": "/api/console/projects",
+      "regex": "^/api/console/projects(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/projects(?:/)?$"
+    },
+    {
+      "page": "/api/console/telemetry",
+      "regex": "^/api/console/telemetry(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/telemetry(?:/)?$"
+    },
+    {
+      "page": "/api/console/webhooks",
+      "regex": "^/api/console/webhooks(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/console/webhooks(?:/)?$"
+    },
+    {
+      "page": "/bookings",
+      "regex": "^/bookings(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/bookings(?:/)?$"
+    },
+    {
+      "page": "/credentials",
+      "regex": "^/credentials(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/credentials(?:/)?$"
+    },
+    {
+      "page": "/facilities",
+      "regex": "^/facilities(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/facilities(?:/)?$"
+    },
+    {
+      "page": "/login",
+      "regex": "^/login(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/login(?:/)?$"
+    },
+    {
+      "page": "/observability",
+      "regex": "^/observability(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/observability(?:/)?$"
+    },
+    {
+      "page": "/organizations",
+      "regex": "^/organizations(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/organizations(?:/)?$"
+    },
+    {
+      "page": "/playground",
+      "regex": "^/playground(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/playground(?:/)?$"
+    },
+    {
+      "page": "/projects",
+      "regex": "^/projects(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/projects(?:/)?$"
+    },
+    {
+      "page": "/webhooks",
+      "regex": "^/webhooks(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/webhooks(?:/)?$"
+    }
+  ],
+  "dataRoutes": [],
+  "rsc": {
+    "header": "rsc",
+    "varyHeader": "rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch",
+    "prefetchHeader": "next-router-prefetch",
+    "didPostponeHeader": "x-nextjs-postponed",
+    "contentTypeHeader": "text/x-component",
+    "suffix": ".rsc",
+    "prefetchSegmentHeader": "next-router-segment-prefetch",
+    "prefetchSegmentSuffix": ".segment.rsc",
+    "prefetchSegmentDirSuffix": ".segments",
+    "clientParamParsing": false,
+    "dynamicRSCPrerender": false
+  },
+  "rewriteHeaders": {
+    "pathHeader": "x-nextjs-rewritten-path",
+    "queryHeader": "x-nextjs-rewritten-query"
+  }
+}

@@ -25,7 +25,15 @@
     "test:stress": "npm run build && node --test dist/tests/stress/*.test.js",
     "test:all": "npm run build && node --test dist/tests/unit/*.test.js dist/tests/stress/*.test.js dist/tests/integration/*.test.js",
     "stress:pg": "npm run build && node dist/scripts/stress-postgres.js",
+    "bench:full": "npm run build && node dist/scripts/benchmark-report.js",
+    "bench:phase5": "npm run build && node dist/scripts/benchmark-phase5.js",
+    "bench:phase6:4proc": "npm run build && node dist/scripts/bench-phase6-4proc.js",
+    "profile:availability": "npm run build && node dist/scripts/profile-availability.js",
+    "verify:reliability-ops": "npm run build && node dist/scripts/reliability-phase5.js",
+    "test:soak:30m": "npm run build && node dist/scripts/soak-test.js --duration-minutes=30",
+    "test:soak:60m": "npm run build && node dist/scripts/soak-test.js --duration-minutes=60",
     "example": "npm run build && node dist/examples/gaming-cafe.js",
+    "example:platform": "npm run build && node dist/examples/platform-sdk-quickstart.js",
     "db:migrate": "npm run build && node dist/scripts/migrate.js"
   },
   "dependencies": {

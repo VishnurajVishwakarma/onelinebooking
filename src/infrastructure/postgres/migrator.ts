@@ -1,16 +1,30 @@
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
 
-const DEFAULT_MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "migrations");
+function resolveMigrationsDir(customDir?: string): string {
+  if (customDir) return customDir;
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(moduleDir, "migrations"),
+    resolve(moduleDir, "../../../../src/infrastructure/postgres/migrations"),
+    resolve(process.cwd(), "src/infrastructure/postgres/migrations"),
+  ];
+  for (const dir of candidates) {
+    if (existsSync(dir)) return dir;
+  }
+  return candidates[0]!;
+}
 
 /** Apply all unapplied SQL migrations in lexicographical order inside transactions. */
 export async function runMigrations(
   pool: Pool,
-  migrationsDir: string = DEFAULT_MIGRATIONS_DIR,
+  migrationsDir?: string,
 ): Promise<string[]> {
-  const entries = await readdir(migrationsDir);
+  const dir = resolveMigrationsDir(migrationsDir);
+  const entries = await readdir(dir);
   const files = entries.filter((name) => name.endsWith(".sql")).sort();
   const applied: string[] = [];
 
@@ -32,7 +46,7 @@ export async function runMigrations(
           [migrationName],
         );
         if (!existing.rowCount) {
-          const sql = await readFile(resolve(migrationsDir, file), "utf8");
+          const sql = await readFile(resolve(dir, file), "utf8");
           await client.query(sql);
           await client.query(
             "INSERT INTO booking_engine_migrations(name) VALUES ($1)",
@@ -52,4 +66,3 @@ export async function runMigrations(
 
   return applied;
 }
-

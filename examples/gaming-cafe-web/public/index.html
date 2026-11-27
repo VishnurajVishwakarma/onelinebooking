@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus Arena — Gaming Cafe Booking (Powered by OneLineBooking SDK)</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --surface: #131a26;
+      --border: #253047;
+      --text: #e6edf7;
+      --muted: #93a3bd;
+      --accent: #38bdf8;
+      --ok: #34d399;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+    .container { max-width: 1080px; margin: 0 auto; padding: 24px 16px; }
+    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+    button { background: var(--accent); color: #07121c; border: none; border-radius: 6px; padding: 10px 14px; font-weight: 600; cursor: pointer; min-height: 40px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .slot { display: inline-flex; align-items: center; gap: 6px; margin: 4px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: #192233; color: var(--text); }
+    .slot.available { border-color: var(--ok); }
+    .status { font-size: 13px; color: var(--muted); }
+    input, select { background: #0d131d; border: 1px solid var(--border); color: var(--text); padding: 8px 10px; border-radius: 6px; width: 100%; margin-top: 4px; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1 style="margin:0;font-size:22px;">Nexus Gaming Cafe</h1>
+        <p class="status" style="margin:4px 0 0;">Live reference client backed strictly by @onelinebooking/sdk &rarr; /v1 REST API</p>
+      </div>
+      <span class="status" id="sync-status">Ready</span>
+    </header>
+    <div class="grid">
+      <section class="card">
+        <h2 style="margin-top:0;font-size:17px;">1. Select Station &amp; Date</h2>
+        <label>Player Handle <input id="customer-handle" value="player-one" /></label>
+        <label>Station <select id="facility-select"></select></label>
+        <label>Date <input type="date" id="booking-date" /></label>
+        <button id="load-slots-btn">Load Availability</button>
+        <div id="slots-list" style="margin-top:14px;"></div>
+      </section>
+      <section class="card">
+        <h2 style="margin-top:0;font-size:17px;">2. Hold &rarr; Confirm Checkout</h2>
+        <div id="hold-box" class="status">Select an available slot to place a 5-minute reservation hold.</div>
+        <div id="action-result" style="margin-top:12px;"></div>
+      </section>
+      <section class="card">
+        <h2 style="margin-top:0;font-size:17px;">3. Confirmed Bookings &amp; Webhooks</h2>
+        <button id="refresh-bookings-btn">Refresh Bookings</button>
+        <pre id="bookings-log" style="font-size:12px;white-space:pre-wrap;color:var(--muted);"></pre>
+      </section>
+    </div>
+  </div>
+  <script>
+    const facSel = document.getElementById("facility-select");
+    const dateInput = document.getElementById("booking-date");
+    const slotsEl = document.getElementById("slots-list");
+    const holdBox = document.getElementById("hold-box");
+    const resultEl = document.getElementById("action-result");
+    const bookingsEl = document.getElementById("bookings-log");
+    dateInput.value = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+
+    async function init() {
+      const res = await fetch("/api/facilities");
+      const data = await res.json();
+      facSel.innerHTML = (data.items || []).map(f => `<option value="${f.id}">${f.name} (${f.category})</option>`).join("");
+      await loadBookings();
+    }
+
+    async function loadSlots() {
+      if (!facSel.value) return;
+      slotsEl.textContent = "Loading...";
+      const res = await fetch(`/api/availability?facilityId=${encodeURIComponent(facSel.value)}&fromDate=${encodeURIComponent(dateInput.value)}`);
+      const data = await res.json();
+      slotsEl.innerHTML = "";
+      for (const s of (data.slots || [])) {
+        const btn = document.createElement("button");
+        btn.className = "slot" + (s.available ? " available" : "");
+        btn.disabled = !s.available;
+        btn.textContent = `${s.localStart} - ${s.localEnd} (${s.amountMinor ?? 0} ${s.currency ?? ""})`;
+        btn.onclick = () => placeHold(s);
+        slotsEl.appendChild(btn);
+      }
+    }
+
+    async function placeHold(slot) {
+      const customerName = document.getElementById("customer-handle").value;
+      const res = await fetch("/api/holds", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ facilityId: slot.facilityId, slotRefs: [slot.slotRef], customerName }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        holdBox.textContent = `Hold failed: ${data.error || res.status}`;
+        return;
+      }
+      holdBox.innerHTML = `Active hold <code>${data.hold.id}</code> expires at ${data.hold.expiresAt}. `;
+      const confirmBtn = document.createElement("button");
+      confirmBtn.textContent = "Confirm Booking";
+      confirmBtn.onclick = async () => {
+        const cRes = await fetch(`/api/holds/${data.hold.id}/convert`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedAmountMinor: slot.amountMinor, expectedCurrency: slot.currency }),
+        });
+        const cData = await cRes.json();
+        resultEl.textContent = cRes.ok ? `Confirmed Booking ID: ${cData.booking.id}` : `Failed: ${cData.error}`;
+        await loadSlots();
+        await loadBookings();
+      };
+      holdBox.appendChild(confirmBtn);
+    }
+
+    async function loadBookings() {
+      const res = await fetch("/api/bookings");
+      const data = await res.json();
+      bookingsEl.textContent = JSON.stringify(data, null, 2);
+    }
+
+    document.getElementById("load-slots-btn").onclick = loadSlots;
+    document.getElementById("refresh-bookings-btn").onclick = loadBookings;
+    init();
+  </script>
+</body>
+</html>
+
