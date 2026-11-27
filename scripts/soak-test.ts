@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { PerformanceObserver, performance } from "node:perf_hooks";
 import {
   ALL_ADMIN_CAPABILITIES,
@@ -100,7 +101,7 @@ async function main(): Promise<void> {
   const facilityIds: string[] = [];
   const allSlotRefs: Array<{ facilityId: string; slotRef: string }> = [];
 
-  for (let f = 0; f < 5; f++) {
+  for (let f = 0; f < 20; f++) {
     const fac = await client.createFacility({
       name: `Soak Bay ${f}`,
       category: "pc",
@@ -120,8 +121,8 @@ async function main(): Promise<void> {
       })),
     );
     await client.setSlotPolicy(fac.id, {
-      durationMinutes: 60,
-      intervalMinutes: 60,
+      durationMinutes: 30,
+      intervalMinutes: 30,
       minNoticeMinutes: 0,
       maxAdvanceDays: 365,
       bufferBeforeMinutes: 0,
@@ -132,13 +133,17 @@ async function main(): Promise<void> {
     });
     await client.setPricing({ facilityId: fac.id, amountMinor: 1000, currency: "USD" });
 
-    const avail = await client.getAvailability({
-      facilityIds: [fac.id],
-      fromDate: baseDate,
-      toDate: new Date(new Date(`${baseDate}T00:00:00Z`).getTime() + 59 * 86_400_000).toISOString().slice(0, 10),
-    });
-    for (const s of avail.slots) {
-      allSlotRefs.push({ facilityId: fac.id, slotRef: s.slotRef });
+    for (let chunk = 0; chunk < 11; chunk += 1) {
+      const startOff = chunk * 30;
+      const endOff = startOff + 29;
+      const avail = await client.getAvailability({
+        facilityIds: [fac.id],
+        fromDate: new Date(new Date(`${baseDate}T00:00:00Z`).getTime() + startOff * 86_400_000).toISOString().slice(0, 10),
+        toDate: new Date(new Date(`${baseDate}T00:00:00Z`).getTime() + endOff * 86_400_000).toISOString().slice(0, 10),
+      });
+      for (const s of avail.slots) {
+        allSlotRefs.push({ facilityId: fac.id, slotRef: s.slotRef });
+      }
     }
   }
 
@@ -427,6 +432,7 @@ async function main(): Promise<void> {
   };
 
   if (reportJsonPath) {
+    mkdirSync(dirname(reportJsonPath), { recursive: true });
     writeFileSync(reportJsonPath, JSON.stringify(report, null, 2), "utf8");
   }
 
